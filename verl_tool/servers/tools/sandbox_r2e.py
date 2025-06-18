@@ -102,7 +102,7 @@ class R2EEnvActor:
             return str(obs), done, True
             
         except Exception as e:
-            raise e
+            # raise e
             # Handle exceptions like agent.py does - convert to observation string
             return str(e), False, False
 
@@ -295,7 +295,7 @@ class SandboxR2ETool(BaseTool):
             try:
                 return (*self.conduct_action(tid, act, extra), None)
             except Exception as e:
-                raise e
+                # raise e
                 return ("", False, False, e)   # bubble error to main thread
 
         with ThreadPoolExecutor(max_workers=self.num_workers) as pool:

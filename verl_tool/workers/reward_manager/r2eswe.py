@@ -15,11 +15,13 @@ from functools import partial
 
 from r2egym.agenthub.trajectory.swebench_utils import make_test_spec
 from swebench.harness.grading import get_eval_tests_report, get_resolution_status
+from verl.workers.reward_manager import register
 
 def clean_text(text):
     # 删除控制字符 & 非打印字符
     return re.sub(r'[\x00-\x1F\x7F-\x9F\u200b-\u200f\u2028-\u202f\u2060-\u206f]', '', text)
 
+@register("r2eswe")
 class R2ESWERewardManager:
     """
     Reward Manager for the WikiRL dataset.
@@ -28,7 +30,7 @@ class R2ESWERewardManager:
     the ground truth answers. The final reward is a weighted combination of a fuzzy matching
     score and a structure score.
     # """
-    def __init__(self, tokenizer=None, num_examine=1, compute_score=None) -> None:
+    def __init__(self, tokenizer=None, num_examine=1, compute_score=None, reward_fn_key='data_source'):
         """
         Initialize the WikiRLRewardManager.
 
@@ -43,6 +45,7 @@ class R2ESWERewardManager:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
+        self.reward_fn_key = reward_fn_key  # 新增，兼容主流程
         # self.fuzzy_weight = 0.7
         # self.structure_weight = 0.3
 

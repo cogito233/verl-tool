@@ -383,7 +383,7 @@ actor_rollout_ref:
     # TP size for rollout. Only effective for vLLM.
     tensor_model_parallel_size: 2
 
-    max_num_batched_tokens: 20480
+    max_num_batched_tokens: 32768
     max_model_len: null
 
     # max length of sequences

@@ -7,10 +7,11 @@ set -x
 dataset_name=r2e_swe_debug
 train_data=data/$dataset_name/train.parquet
 val_data=data/$dataset_name/train.parquet
-model_name=R2E-Gym/R2EGym-7B-Agent
+model_name=/minimax-dialogue/ruobai/cogito/base_model/R2EGym-7B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=4
 n_nodes=1
+enable_agent=True # enable agent for tool use
 
 # n=8
 # batch_size=32
@@ -22,7 +23,7 @@ max_prompt_length=2048
 max_response_length=30720 
 max_obs_length=$max_prompt_length
 temperature=0.5
-strategy="fsdp_agent" # remove _agent for normal verl behavior
+strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
 token of
 # each action, which are </answer> and </python> respectively
@@ -92,6 +93,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     +actor_rollout_ref.agent.num_gpus=$n_gpus_per_node \
     +actor_rollout_ref.agent.valid_actions=$valid_actions \
     +actor_rollout_ref.agent.no_action_as_stop=False \
+    +actor_rollout_ref.actor.enable_agent=$enable_agent \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \

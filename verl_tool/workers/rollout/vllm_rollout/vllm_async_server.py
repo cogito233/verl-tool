@@ -146,7 +146,7 @@ class AsyncvLLMServer(AsyncServerBase):
         config = config.rollout
 
         tensor_parallel_size = config.get("tensor_model_parallel_size", 1)
-        max_num_batched_tokens = config.get("max_num_batched_tokens", 8192)
+        max_num_batched_tokens = config.get("max_num_batched_tokens", 32768)
         max_model_len = config.max_model_len if config.max_model_len else config.prompt_length + config.response_length
         max_model_len = int(max_model_len)
 
