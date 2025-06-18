@@ -8,6 +8,7 @@ class AgentActorConfig:
     max_start_length: int=None
     max_prompt_length: int=None
     max_response_length: int=None
+    max_model_len: int=None  # Maximum model length, used for async rollout to limit the input length.
     max_obs_length: int=None
     max_action_length: int=None
     tool_server_url: str = None
@@ -25,3 +26,4 @@ class AgentActorConfig:
     mtrl_role: str="user"
     mtrl_sep: str= "\n<|im_start|>system\n{obs}<|im_end|>\n<|im_start|>assistant\n"
     turn_end_token: str="<|im_end|>"
+    rollout_mode: str="sync" # "sync" or "async"
