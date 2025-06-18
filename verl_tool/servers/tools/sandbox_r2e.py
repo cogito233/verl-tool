@@ -198,11 +198,20 @@ class SandboxR2ETool(BaseTool):
         valid : bool
             Whether the action itself was valid.
         """
+#         print(
+#     "--------------------------------\n"
+#     "conduct_action\n"
+#     f"trajectory_id {trajectory_id}\n"
+#     f"action {action}\n"
+#     f"extra_field {extra_field}\n"
+#     "--------------------------------"
+# )
+#         exit(1)
         # 1) Ensure an actor exists (lazy creation).
         actor = self.load_env(trajectory_id)
         if actor is None:
             # Create a brand-new R2EEnvActor for this trajectory.
-            ds = extra_field.get("extra_fields", extra_field)
+            ds = extra_field.get("ds", extra_field.get("extra_fields", extra_field))
             # Default command files
             command_files = [
                 Path("/minimax-dialogue/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search.py"),

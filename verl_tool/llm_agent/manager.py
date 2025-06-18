@@ -777,7 +777,7 @@ class AgentActorManager:
             print("$" * 100)
             print(response)
             print("#" * 100)
-            os.mkdir('tmp', exist_ok=True)  # Ensure tmp directory exists
+            os.makedirs('tmp', exist_ok=True)  # Ensure tmp directory exists
             with open("tmp/error_data.json", 'w') as f:
                 json.dump(batch_data, f, indent=4)
             try:
@@ -824,7 +824,7 @@ class AgentActorManager:
             logging.error(f"Payload size: {len(str(safe_payload))} chars")
             
             # Save error data for debugging
-            os.mkdir('tmp', exist_ok=True)  # Ensure tmp directory exists
+            os.makedirs('tmp', exist_ok=True)  # Ensure tmp directory exists
             with open(f"tmp/error_data_{uuid.uuid4().hex[:8]}.json", 'w') as f:
                 json.dump(safe_payload, f, indent=2)
             
