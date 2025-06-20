@@ -1,4 +1,3 @@
-import nltk
 import json
 import torch
 
@@ -46,23 +45,21 @@ class R2ESWERewardManager:
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
         self.reward_fn_key = reward_fn_key  # 新增，兼容主流程
-        # self.fuzzy_weight = 0.7
-        # self.structure_weight = 0.3
 
-    def reward_single(self, output, ds):
-        test_spec = make_test_spec(ds)
-        out, _ = self.runtime.run_tests()
-        eval_status_map, found = self.runtime.get_logs_eval(test_spec, out)
-        eval_ref = {
-            KEY_INSTANCE_ID: self.test_spec.instance_id,
-            FAIL_TO_PASS: self.test_spec.FAIL_TO_PASS,
-            PASS_TO_PASS: self.test_spec.PASS_TO_PASS,
-        }
-        report = get_eval_tests_report(
-            eval_status_map, eval_ref, eval_type=get_eval_type(self.test_spec)
-        )
-        success = get_resolution_status(report) == ResolvedStatus.FULL.value
-        return int(success), report
+    # def reward_single(self, output, ds): # Aborted
+    #     test_spec = make_test_spec(ds)
+    #     out, _ = self.runtime.run_tests()
+    #     eval_status_map, found = self.runtime.get_logs_eval(test_spec, out)
+    #     eval_ref = {
+    #         KEY_INSTANCE_ID: self.test_spec.instance_id,
+    #         FAIL_TO_PASS: self.test_spec.FAIL_TO_PASS,
+    #         PASS_TO_PASS: self.test_spec.PASS_TO_PASS,
+    #     }
+    #     report = get_eval_tests_report(
+    #         eval_status_map, eval_ref, eval_type=get_eval_type(self.test_spec)
+    #     )
+    #     success = get_resolution_status(report) == ResolvedStatus.FULL.value
+    #     return int(success), report
 
     def parse_last_response(self, data: DataProto):
         last_responses = []
@@ -71,29 +68,91 @@ class R2ESWERewardManager:
         return last_responses
 
     def __call__(self, data: DataProto, return_dict=False):
-        print("")
-        print(data)
-        print(len(data))
-        import pickle
-        with open("data_stub_new_qwq.pkl", "wb") as f:
-            pickle.dump(data, f)
-        exit(1)
-        dses = [datapoint["extra_fields"] for datapoint in data.non_tensor_batch]
-        print(test_spec)
-        outputs = self.parse_last_response(data)
-        rewards, reports = [], []
-        for output, ds in zip(outputs, dses):
-            success, report = self.reward_single(output, ds)
-            rewards.append(success)
-            reports.append(report)
+        # print("")
+        # print(data)
+        # print(len(data))
+        # import pickle
+        # with open("data_stub_withReward.pkl", "wb") as f:
+        #     pickle.dump(data, f)
         # exit(1)
+        import re
+
+        print(f"Processing {len(data)} samples for reward extraction")
+        
+        # 获取input_ids
+        batch_data = data.batch
+        input_ids = batch_data['input_ids']
+        
+        rewards = []
+        reports = []
+        
+        for i in range(input_ids.shape[0]):
+            try:
+                # 解码input_ids，去除padding token
+                tokens = input_ids[i]
+                tokens = tokens[tokens != self.tokenizer.pad_token_id]
+                
+                # 解码为raw text
+                raw_text = self.tokenizer.decode(tokens, skip_special_tokens=False)
+                
+                # 使用正则表达式查找<reward>reward_str</reward>
+                reward_pattern = r'<reward>(.*?)</reward>'
+                reward_match = re.search(reward_pattern, raw_text, re.DOTALL)
+                
+                if reward_match:
+                    reward_str = reward_match.group(1).strip()
+                    try:
+                        # 尝试转换为float
+                        reward_value = float(reward_str)
+                        rewards.append(reward_value)
+                        reports.append(f"Found reward: {reward_value}")
+                    except ValueError:
+                        # 如果无法转换为float，设为0
+                        rewards.append(0.0)
+                        reports.append(f"Invalid reward format: '{reward_str}', set to 0.0")
+                else:
+                    # 如果找不到reward标签，设为0
+                    rewards.append(0.0)
+                    reports.append("No reward tag found, set to 0.0")
+                    
+            except Exception as e:
+                # 处理任何解码错误
+                rewards.append(0.0)
+                reports.append(f"Error processing sample {i}: {str(e)}")
+        
+        # print( f"Extracted rewards: {rewards}")
+        # print(f"Extracted reports: {reports}")
+        # responses_id = data.batch["responses"]
+        # reward_tensor = torch.torch.zeros_like(responses_id, dtype=torch.float32)   
+        # print(f"Reward tensor shape: {reward_tensor.shape}")
+        # print(f"Reward tensor: {reward_tensor}")
+        # exit(1)
+        responses_id = data.batch["responses"]
+        reward_tensor = torch.zeros_like(responses_id, dtype=torch.float32)
+
+        pad_id = self.tokenizer.pad_token_id
+        for i, reward_val in enumerate(rewards):
+            # find last non-pad token position in this response sequence
+            seq = responses_id[i]
+            valid_mask = seq != pad_id
+            if valid_mask.any():
+                last_token_idx = int(valid_mask.nonzero(as_tuple=False)[-1])
+                reward_tensor[i, last_token_idx] = reward_val
+            else:
+                # rare edge case: all pads – keep zeros
+                reports[i] += " | response sequence empty"
+
+        print(f"Extracted rewards: {rewards}")
+        print(f"Reward tensor shape: {reward_tensor.shape}")
+
         if return_dict:
             return {
-                "reward_tensor": rewards,
-                "reward_extra_info": reports,
+                "reward_tensor": reward_tensor,
+                # "reward_extra_info": {"reports": reports},
+                "reward_extra_info": None,
             }
         else:
-            return rewards
+            return reward_tensor
 
 
 
@@ -101,38 +160,15 @@ if __name__ == '__main__':
     import pickle
 
     # Load the saved data object from disk
-    with open("data_stub_r2e.pkl", "rb") as f:
+    with open("data_stub_withReward.pkl", "rb") as f:
         dummy_data = pickle.load(f)
+    print(dummy_data)
 
     # Instantiate the WikiRLRewardManager (you can pass in config if needed)
     reward_manager = R2ESWERewardManager()
 
     # Compute rewards for the loaded data
-    rewards = reward_manager(dummy_data)
-    print("Rewards:", rewards)
+    rewards = reward_manager(dummy_data, return_dict=True)
+    print("Rewards:", rewards["reward_tensor"])
+    print("Reports:", rewards["reward_extra_info"])
 
-
-"""
-(TaskRunner pid=2019847) ==== Call WikiRLRewardManager ====
-(TaskRunner pid=2019847) DataProto(batch=TensorDict(
-(TaskRunner pid=2019847)     fields={
-(TaskRunner pid=2019847)         attention_mask: Tensor(shape=torch.Size([4, 8192]), device=cpu, dtype=torch.int64, is_shared=False),
-(TaskRunner pid=2019847)         info_mask: Tensor(shape=torch.Size([4, 8192]), device=cpu, dtype=torch.int64, is_shared=False),
-(TaskRunner pid=2019847)         input_ids: Tensor(shape=torch.Size([4, 8192]), device=cpu, dtype=torch.int64, is_shared=False),
-(TaskRunner pid=2019847)         old_log_probs: Tensor(shape=torch.Size([4, 4096]), device=cpu, dtype=torch.float32, is_shared=False),
-(TaskRunner pid=2019847)         position_ids: Tensor(shape=torch.Size([4, 8192]), device=cpu, dtype=torch.int64, is_shared=False),
-(TaskRunner pid=2019847)         prompts: Tensor(shape=torch.Size([4, 4096]), device=cpu, dtype=torch.int64, is_shared=False),
-(TaskRunner pid=2019847)         ref_log_prob: Tensor(shape=torch.Size([4, 4096]), device=cpu, dtype=torch.float32, is_shared=False),
-(TaskRunner pid=2019847)         responses: Tensor(shape=torch.Size([4, 4096]), device=cpu, dtype=torch.int64, is_shared=False),
-(TaskRunner pid=2019847)         responses_with_info_mask: Tensor(shape=torch.Size([4, 4096]), device=cpu, dtype=torch.int64, is_shared=False)},
-(TaskRunner pid=2019847)     batch_size=torch.Size([4]),
-(TaskRunner pid=2019847)     device=None,
-(TaskRunner pid=2019847)     is_shared=False), non_tensor_batch={'data_source': array(['wiki_qa', 'wiki_qa', 'wiki_qa', 'wiki_qa'], dtype=object), 'ability': array(['wiki', 'wiki', 'wiki', 'wiki'], dtype=object), 'reward_model': array([{'ground_truth': array(['Ginnifer Goodwin'], dtype=object), 'style': 'rule'},
-(TaskRunner pid=2019847)        {'ground_truth': array(['Ginnifer Goodwin'], dtype=object), 'style': 'rule'},
-(TaskRunner pid=2019847)        {'ground_truth': array(['Natalia Gastiain Tena'], dtype=object), 'style': 'rule'},
-(TaskRunner pid=2019847)        {'ground_truth': array(['Natalia Gastiain Tena'], dtype=object), 'style': 'rule'}],
-(TaskRunner pid=2019847)       dtype=object), 'index': array([0, 0, 0, 0], dtype=object), 'uid': array(['ca6a0e8e-6821-4a00-8a0c-5049019e7da7',
-(TaskRunner pid=2019847)        'ca6a0e8e-6821-4a00-8a0c-5049019e7da7',
-(TaskRunner pid=2019847)        'b58d9f7c-48c6-487f-911f-10db4a2f7b2b',
-(TaskRunner pid=2019847)        'b58d9f7c-48c6-487f-911f-10db4a2f7b2b'], dtype=object)}, meta_info={'turns_stats': [4, 4], 'active_mask': [True, True], 'valid_action_stats': [4, 4], 'global_token_num': [5541, 5541, 3697, 5542], 'temperature': 0.9})
-"""

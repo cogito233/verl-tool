@@ -87,6 +87,11 @@ class R2EEnvActor:
             - done: Whether task is complete
             - valid: Whether action was valid
         """
+        if "<compute_reward>sandbox_r2e</compute_reward>" in action_str:
+            reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
+            reward_str = f"<reward>{reward}</reward>"#<test_output>{test_output}</test_output>" # 暂时不返回test_output
+            return reward_str, True, True
+
         try:
             # Parse action from string (similar to agent.py parse_response)
             action = Action.from_string(action_str)
@@ -97,14 +102,31 @@ class R2EEnvActor:
             
             # Execute action (same pattern as agent.py)
             obs, reward, done, info = self.env.step(action, timeout=900)
+
+            # if done, then pad the reward into the observation
+            if done:
+                reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
+                obs = str(obs)+f"<reward>{reward}</reward>"
+                # obs += f"<reward>{reward}</reward>"#<test_output>{test_output}</test_output>"
             
             # Return observation as string (following agent.py pattern)
             return str(obs), done, True
             
         except Exception as e:
-            # raise e
+            raise e
             # Handle exceptions like agent.py does - convert to observation string
             return str(e), False, False
+    
+    def reward_env(self, action_str: str) -> Tuple[float, bool, str]:
+        """
+        Reward the environment, return the reward, validity and test output
+        """
+        if action_str == "<compute_reward>sandbox_r2e</compute_reward>":
+            reward, test_output = self.env.runtime._calculate_reward(get_test_output=True)
+            reward = float(reward)
+            return reward, True, test_output
+        else:
+            raise ValueError(f"Invalid reward action: {action_str}")
 
 @register_tool
 class SandboxR2ETool(BaseTool):
@@ -175,6 +197,9 @@ class SandboxR2ETool(BaseTool):
         # 具体的解析和验证由环境Actor处理
         action_str = str(action).strip()
         
+        if "<compute_reward>sandbox_r2e</compute_reward>" in action_str:
+            return action, True
+        
         # 基本格式检查
         if ("<function=" in action_str and "</function>" in action_str) or \
            ("function=" in action_str and "parameter=" in action_str):
@@ -241,16 +266,16 @@ class SandboxR2ETool(BaseTool):
             obs, done, valid = result, False, True
 
         # Debug output
-        output = (
-            "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
-            f"trajectory_id: {trajectory_id}\n"
-            f"action: {action}\n"
-            f"extra_field: {extra_field}\n"
-            f"observation: {obs}\n"
-            f"done: {done}, valid: {valid}\n"
-            "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
-        )
-        print(output)
+        # output = (
+        #     "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+        #     f"trajectory_id: {trajectory_id}\n"
+        #     f"action: {action}\n"
+        #     f"extra_field: {extra_field}\n"
+        #     f"observation: {obs}\n"
+        #     f"done: {done}, valid: {valid}\n"
+        #     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+        # )
+        # print(output)
 
         # 4) Refresh LRU order *after* the step.
         if trajectory_id in self.actor_creation_order:
@@ -258,13 +283,6 @@ class SandboxR2ETool(BaseTool):
         self.actor_creation_order.append(trajectory_id)
 
         # 5) Clean-up if the episode finished.
-        if done:
-            # Close environment (optional, actor handles cleanup)
-            try:
-                ray.get(actor.close_env.remote())
-            except:
-                pass
-            self.delete_env(trajectory_id)
 
         if not valid:
             obs = f"The action {action} is invalid, please retry, obs is {obs}"
@@ -297,14 +315,22 @@ class SandboxR2ETool(BaseTool):
         # ----------------------------------------------------------------- #
         # Parallel fan-out using a thread pool                              #
         # ----------------------------------------------------------------- #
+
+        actions_with_last_step = []
+        for i in range(len(trajectory_ids)):
+            if extra_fields[i].get('is_last_step', False): # 强行把last step改成calculate reward
+                actions_with_last_step.append("<compute_reward>sandbox_r2e</compute_reward>") # If there is last step, directly compute the reward
+            else:
+                actions_with_last_step.append(actions[i])
+
         def _worker(idx: int):
             tid   = trajectory_ids[idx]
-            act   = actions[idx]
+            act   = actions_with_last_step[idx] # Changed from actions if last step
             extra = extra_fields[idx].get("extra_fields", extra_fields[idx])
             try:
                 return (*self.conduct_action(tid, act, extra), None)
             except Exception as e:
-                # raise e
+                raise e
                 return ("", False, False, e)   # bubble error to main thread
 
         with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
@@ -317,34 +343,9 @@ class SandboxR2ETool(BaseTool):
                 if err:
                     print(f"[ERROR] trajectory_id={trajectory_ids[i]}: {err}")
 
-        # ----------------------------------------------------------------- #
-        # Fire-and-forget JSONL logging                                     #
-        # ----------------------------------------------------------------- #
-        # try:
-        #     log_path = Path("browser_server_logs.jsonl")
-        #     log_path.parent.mkdir(parents=True, exist_ok=True)
-        #     with log_path.open("a", encoding="utf-8") as f:
-        #         f.write(
-        #             json.dumps(
-        #                 {
-        #                     "input": {
-        #                         "trajectory_ids": trajectory_ids,
-        #                         "actions": actions,
-        #                         "extra_fields": extra_fields,
-        #                     },
-        #                     "output": {
-        #                         "observations": observations,
-        #                         "dones": dones,
-        #                         "valid_flags": valid_flags,
-        #                     },
-        #                 },
-        #                 ensure_ascii=False,
-        #             )
-        #             + "\n"
-        #         )
-        # except Exception as e:
-        #     # Logging failures must *never* break main logic
-        #     print(f"[WARN] Failed to write browser_server_logs.jsonl: {e}")
+        for i in range(len(trajectory_ids)):
+            if extra_fields[i].get('is_last_step', False) or dones[i]: # To Check, not sure if we should delete the env_dones
+                self.delete_env(trajectory_ids[i])
 
         return observations, dones, valid_flags
 
@@ -354,9 +355,9 @@ class SandboxR2ETool(BaseTool):
             # raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
             oldest = self.actor_creation_order.pop(0)
             print(f"[INFO] Deleting actor {oldest} due to too many actors.")
-            if oldest in self.env_actors:
-                ray.kill(self.env_actors[oldest], no_restart=True)
-                del self.env_actors[oldest]
-            if oldest in self.actor_creation_order:
-                self.actor_creation_order.remove(oldest)
-            # self.delete_env(oldest)
+            # if oldest in self.env_actors:
+            #     ray.kill(self.env_actors[oldest], no_restart=True)
+            #     del self.env_actors[oldest]
+            # if oldest in self.actor_creation_order:
+            #     self.actor_creation_order.remove(oldest)
+            self.delete_env(oldest)

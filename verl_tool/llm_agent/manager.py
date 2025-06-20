@@ -230,7 +230,8 @@ class AgentActorManager:
         """Process next observations from environment."""
         async with self.tokenizer_lock:
             mtrl_sep = self.config.mtrl_sep
-            next_obs = [obs if not done else "" for obs, done in zip(next_obs, dones)]
+            # next_obs = [obs if not done else "" for obs, done in zip(next_obs, dones)]
+            next_obs = [obs if not done else obs for obs, done in zip(next_obs, dones)] # Zhiheng: keep the last observation, for evaluation
             if self.config.truncate_obs_side == 'left':
                 next_obs_ids = self.tokenizer(
                     next_obs,
@@ -262,10 +263,15 @@ class AgentActorManager:
                 )
                 processed_next_obs = []
                 for i in range(len(next_obs)):
-                    if finishs[i] or dones[i]:
+                    if finishs[i]: # Zhiheng: If not work, I should change the logic here
                         # do action is false
                         assert next_obs[i] == "", f"next_obs should be empty when finishs is True, but got {next_obs[i]}"
                         processed_next_obs.append("")
+                    elif dones[i]: # if the episode is done, we keep the last observation
+                        if self.config.keep_last_obs:
+                            processed_next_obs.append(mtrl_sep.format(obs=next_obs[i]))
+                        else:
+                            processed_next_obs.append("")
                     elif valid_action[i]:
                         processed_next_obs.append(mtrl_sep.format(obs=next_obs[i]))
                     else:
@@ -479,7 +485,8 @@ class AgentActorManager:
 
         turns_stats_extra = {
             "action_lengths": [[] for _ in range(gen_batch.batch['input_ids'].shape[0])],
-            "obs_lengths": [[] for _ in range(gen_batch.batch['input_ids'].shape[0])]
+            "obs_lengths": [[] for _ in range(gen_batch.batch['input_ids'].shape[0])],
+            "last_obs": ["" for _ in range(gen_batch.batch['input_ids'].shape[0])]
         }
         agent_sampling_params = sampling_params.copy()
         agent_sampling_params.update({
@@ -508,6 +515,13 @@ class AgentActorManager:
                 active_uids, responses_str, do_actions, active_mask,
                 extra_fields=rollings.non_tensor_batch.get('extra_info', None)
             )
+            # Zhiheng: save the last observation
+            obs_idx = 0
+            for i, active in enumerate(active_mask):
+                if active:
+                    turns_stats_extra["last_obs"][i] = next_obs[obs_idx]
+                    obs_idx += 1
+
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_num_list.append(self._update_active_mask_inplace(active_mask, curr_active_mask))
             # turns_stats[curr_active_mask] += 1
@@ -602,10 +616,15 @@ class AgentActorManager:
                 is_last_step=(step == self.config.max_turns)
             )
             perf_timer.end(f'step_{step}_tool_interaction')
+            obs_idx = 0
+            for i, active in enumerate(active_mask):
+                if active:
+                    turns_stats_extra["last_obs"][i] = next_obs[obs_idx]
+                    obs_idx += 1
 
             perf_timer.start(f'step_{step}_state_updates')
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-            self._update_active_mask_inplace(turns_stats, curr_active_mask)
+            self._update_active_mask_inplace(active_mask, curr_active_mask) # Fixed 0619 During Meet with Dongfu 
             turns_stats[curr_active_mask] += 1
             valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
 
@@ -652,6 +671,7 @@ class AgentActorManager:
             'active_mask': active_mask.tolist(),
             'action_lengths': turns_stats_extra["action_lengths"],
             'obs_lengths': turns_stats_extra["obs_lengths"],
+            'last_obs': turns_stats_extra["last_obs"]
         }
 
         logger.info(f"ACTIVE_TRAJ_NUM: {active_num_list}")
@@ -862,7 +882,12 @@ class AgentActorManager:
             batch_data['extra_fields'] = extra_fields.tolist() if isinstance(extra_fields, np.ndarray) else extra_fields
         logger.info(f" - Number of finished responses: {len([x for x in do_actions if not x])} / {len(do_actions)}")
         response = await self.send_batch_requests_async(batch_data)
-        active_observations = response['observations']
+        # print(response)
+        try:
+            active_observations = response['observations']
+        except:
+            print("ERROR RESPONSE: ", response)
+            raise ValueError("Failed to get observations from tool server")
         active_dones = [int(x) for x in response['dones']]
         active_valid_actions = [int(x) for x in response['valids']]
 
