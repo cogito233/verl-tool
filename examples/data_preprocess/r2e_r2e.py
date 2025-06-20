@@ -126,17 +126,17 @@ def build_instances(data, split_name):
             "ability": "r2e_swe",
             "reward_model": {
                 "style": "rule",
-                "ground_truth": row["test_patch"],
+                "ground_truth": "Sample GT",
             },
             "extra_info": {
                 "split": split_name,
-                "index": row["instance_id"],
-                "id": row["instance_id"],
+                "index": row["repo_name"] + "_" + row["commit_hash"],
+                "id": row["repo_name"] + "_" + row["commit_hash"],
                 "row_i": row_i,
                 "ds": row
             }
         }
-        instance["extra_info"]["ds"]["is_extra_sync"] = True
+        # instance["extra_info"]["ds"]["is_extra_sync"] = True
         # print(instance)
         # exit(1)
         instances.append(instance)
@@ -149,7 +149,7 @@ def build_dataset(dataset_name, dataset_path):
     else:
         dataset = load_dataset(dataset_path)
     print(dataset)
-    train_data = dataset["train"]
+    train_data = dataset["train"] if "train" in dataset else dataset
     # Select first samples for debugging - ensure we don't exceed dataset size
     max_samples = 25600
     actual_size = len(train_data)
@@ -191,6 +191,6 @@ def build_dataset(dataset_name, dataset_path):
 
 
 if __name__ == "__main__":
-    dataset_name = "r2e_sync_extra"
-    dataset_path = "/minimax-dialogue/ruobai/cogito_local/r2e-gym/data/extra_sync_full"
+    dataset_name = "r2e_lite"
+    dataset_path = "R2E-Gym/R2E-Gym-Lite"
     build_dataset(dataset_name, dataset_path)
