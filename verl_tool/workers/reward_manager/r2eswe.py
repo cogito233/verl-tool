@@ -1,5 +1,6 @@
 import json
 import torch
+import pickle
 
 from verl import DataProto
 from verl.utils.reward_score import _default_compute_score
@@ -11,6 +12,8 @@ import regex as re
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
+from collections import defaultdict
+import numpy as np
 
 from r2egym.agenthub.trajectory.swebench_utils import make_test_spec
 from swebench.harness.grading import get_eval_tests_report, get_resolution_status
@@ -45,6 +48,7 @@ class R2ESWERewardManager:
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
         self.reward_fn_key = reward_fn_key  # 新增，兼容主流程
+        self.step = None
 
     # def reward_single(self, output, ds): # Aborted
     #     test_spec = make_test_spec(ds)
@@ -68,6 +72,35 @@ class R2ESWERewardManager:
         return last_responses
 
     def __call__(self, data: DataProto, return_dict=False):
+        # 初始化record_dir（参考torl实现）
+        save_record = data.meta_info.get('save_record', True)
+
+        if not hasattr(self, 'record_dir'):
+            if hasattr(self, 'run_id'):
+                self.record_dir = Path(__file__).parent.parent.parent.parent / "verl_step_records" / self.run_id
+                self.record_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                self.record_dir = Path(__file__).parent.parent.parent.parent / "verl_step_records" / f"r2eswe-{time.strftime('%Y-%m-%d-%H-%M-%S')}"
+                self.record_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 检查last step index（参考torl实现）
+        if self.step is None:
+            last_step_idx = 0
+            for file in os.listdir(self.record_dir):
+                if self.num_examine == 1:
+                    if re.search(r"step-val-\d+\.pkl", file):
+                        step_idx = int(file[:-len(".pkl")].split("-")[-1])
+                        if step_idx > last_step_idx:
+                            last_step_idx = step_idx
+                else:
+                    if re.search(r"step-\d+\.pkl", file):
+                        step_idx = int(file[:-len(".pkl")].split("-")[-1])
+                        if step_idx > last_step_idx:
+                            last_step_idx = step_idx
+            self.step = last_step_idx + 1
+        if data.meta_info.get('global_step', None) is not None:
+            self.step = data.meta_info['global_step']
+
         # print("")
         # print(data)
         # print(len(data))
@@ -85,6 +118,7 @@ class R2ESWERewardManager:
         
         rewards = []
         reports = []
+        reward_extra_info = defaultdict(list)
         
         for i in range(input_ids.shape[0]):
             try:
@@ -120,6 +154,45 @@ class R2ESWERewardManager:
                 rewards.append(0.0)
                 reports.append(f"Error processing sample {i}: {str(e)}")
         
+        # 为每个样本计算统计信息（参考torl的实现方式）
+        for i in range(len(data)):
+            data_item = data[i]
+            
+            # 计算当前样本的obs长度统计
+            if 'obs_lengths' in data_item.non_tensor_batch:
+                obs_lengths = data_item.non_tensor_batch['obs_lengths']
+                # 过滤掉0值（padding）
+                valid_obs_lengths = [length for length in obs_lengths if length > 0]
+                if valid_obs_lengths:
+                    reward_extra_info['average_obs_length'].append(float(np.mean(valid_obs_lengths)))
+                    reward_extra_info['max_obs_length'].append(int(np.max(valid_obs_lengths)))
+                else:
+                    reward_extra_info['average_obs_length'].append(0.0)
+                    reward_extra_info['max_obs_length'].append(0)
+            else:
+                reward_extra_info['average_obs_length'].append(0.0)
+                reward_extra_info['max_obs_length'].append(0)
+            
+            # 计算当前样本的action长度统计
+            if 'action_lengths' in data_item.non_tensor_batch:
+                action_lengths = data_item.non_tensor_batch['action_lengths']
+                # 过滤掉0值（padding）
+                valid_action_lengths = [length for length in action_lengths if length > 0]
+                if valid_action_lengths:
+                    reward_extra_info['average_action_length'].append(float(np.mean(valid_action_lengths)))
+                    reward_extra_info['max_action_length'].append(int(np.max(valid_action_lengths)))
+                else:
+                    reward_extra_info['average_action_length'].append(0.0)
+                    reward_extra_info['max_action_length'].append(0)
+                
+                # 统计非0元素的个数作为action round
+                action_round = sum(1 for length in action_lengths if length > 0)
+                reward_extra_info['action_round'].append(action_round)
+            else:
+                reward_extra_info['average_action_length'].append(0.0)
+                reward_extra_info['max_action_length'].append(0)
+                reward_extra_info['action_round'].append(0)
+        
         # print( f"Extracted rewards: {rewards}")
         # print(f"Extracted reports: {reports}")
         # responses_id = data.batch["responses"]
@@ -144,12 +217,26 @@ class R2ESWERewardManager:
 
         print(f"Extracted rewards: {rewards}")
         print(f"Reward tensor shape: {reward_tensor.shape}")
+        print(f"Statistics: avg_obs_len={reward_extra_info['average_obs_length']}, max_obs_len={reward_extra_info['max_obs_length']}, avg_action_len={reward_extra_info['average_action_length']}, max_action_len={reward_extra_info['max_action_length']}, action_rounds={reward_extra_info['action_round']}")
+
+        # 保存完整的data为pkl文件
+        # if save_record:
+        if True: # Always save
+            if self.num_examine == 1:
+                temp_file = self.record_dir / f"step-val-{self.step}.pkl"
+            else:
+                temp_file = self.record_dir / f"step-{self.step}.pkl"
+            self.step += 1
+            
+            # 保存完整的data对象为pkl
+            with open(temp_file, "wb") as f:
+                pickle.dump(data, f)
+            print(f"Saved complete data to {temp_file}")
 
         if return_dict:
             return {
                 "reward_tensor": reward_tensor,
-                # "reward_extra_info": {"reports": reports},
-                "reward_extra_info": None,
+                "reward_extra_info": reward_extra_info,
             }
         else:
             return reward_tensor
@@ -160,7 +247,7 @@ if __name__ == '__main__':
     import pickle
 
     # Load the saved data object from disk
-    with open("data_stub_withReward.pkl", "rb") as f:
+    with open("data_stub_withReward_bs8.pkl", "rb") as f:
         dummy_data = pickle.load(f)
     print(dummy_data)
 
