@@ -427,14 +427,30 @@ class AgentActorManager:
 
         overlong_dones = effective_lens >= self.config.max_response_length
 
-        # return the updated responses along with its masked version
+        im_start_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+        im_end_id   = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
         if self.config.truncate_response_side == 'left':
-            # it should be left most of the time.
-            return {'responses': responses[:, :max_len],
-                    'responses_with_loss_mask': responses_with_loss_mask[:, :max_len]}, overlong_dones
+            trunc_resp  = responses[:, :max_len]
+            trunc_mask  = responses_with_loss_mask[:, :max_len]
+            trunc_resp[:, 0]  = im_start_id
+            trunc_resp[:, -1] = im_end_id
+            return {'responses': trunc_resp,
+                    'responses_with_loss_mask': trunc_mask}, overlong_dones
         elif self.config.truncate_response_side == 'right':
-            return {'responses': responses[:, -max_len:],
-                    'responses_with_loss_mask': responses_with_loss_mask[:, -max_len:]}, overlong_dones
+            trunc_resp  = responses[:, -max_len:]
+            trunc_mask  = responses_with_loss_mask[:, -max_len:]
+            trunc_resp[:, 0]  = im_start_id
+            trunc_resp[:, -1] = im_end_id
+            return {'responses': trunc_resp,
+                    'responses_with_loss_mask': trunc_mask}, overlong_dones
+        # return the updated responses along with its masked version
+        # if self.config.truncate_response_side == 'left':
+        #     # it should be left most of the time.
+        #     return {'responses': responses[:, :max_len],
+        #             'responses_with_loss_mask': responses_with_loss_mask[:, :max_len]}, overlong_dones
+        # elif self.config.truncate_response_side == 'right':
+        #     return {'responses': responses[:, -max_len:],
+        #             'responses_with_loss_mask': responses_with_loss_mask[:, -max_len:]}, overlong_dones
         else:
             raise ValueError(
                 f"Invalid truncate_response_side: {self.config.truncate_response_side}. Allowed options are 'left' or 'right'.")
@@ -454,6 +470,79 @@ class AgentActorManager:
         """Update active mask in-place to avoid memory allocation"""
         active_mask &= new_conditions
         return active_mask.sum().item()  # Return count for logging
+
+    async def _handle_overlong_finish(
+        self,
+        overlong_dones: torch.Tensor,
+        active_mask: torch.Tensor,
+        traj_ids: List[str],
+        responses_str_all: List[str],
+        turns_stats_extra: Dict,
+        extra_info=None,
+    ):
+        """对因超长而退出的轨迹：补发一次 finish，拿回 reward & last_obs。"""
+        # if not overlong_dones.any():
+        #     return
+        # over_idx  = torch.nonzero(overlong_dones, as_tuple=False).squeeze(-1)
+        # if over_idx.numel() == 0:
+        #     return
+        # # 1. 找到对应 uid 和 action
+        # over_uids  = [traj_ids[i] for i in over_idx.tolist()]
+        # # responses_str_all 里只保留了当前 active 的顺序，需要先映射
+        # active_idx_map = [j for j, m in enumerate(active_mask) if m]
+        # over_actions   = [responses_str_all[active_idx_map.index(i)] for i in over_idx.tolist()]
+
+        over_idx = torch.nonzero(overlong_dones, as_tuple=False).squeeze(-1)
+        if over_idx.numel() == 0:
+            return
+
+        # 仅保留仍处于 active 的超长轨迹，避免 index 查不到
+        active_idx_map = [j for j, m in enumerate(active_mask) if m]
+        active_idx_set = set(active_idx_map)
+        valid_over_idx = [i for i in over_idx.tolist() if i in active_idx_set]
+        if not valid_over_idx:      # 全部都是 inactive，直接退出
+            return
+
+        # 1. 找到对应 uid 和 action
+        over_uids = [traj_ids[i] for i in valid_over_idx]
+        idx_map   = {g: l for l, g in enumerate(active_idx_map)}  # global → local
+        over_actions = [responses_str_all[idx_map[i]] for i in valid_over_idx]
+
+        # 1.5 裁剪 extra_info，保持长度一致
+        extra_subset = None
+        if extra_info is not None:
+            if isinstance(extra_info, np.ndarray):
+                extra_subset = extra_info[valid_over_idx].tolist()
+            else:
+                extra_subset = [extra_info[i] for i in valid_over_idx]
+
+        logger.info(f"[DEBUG] _handle_overlong_finish:")
+        logger.info(f"  - over_idx: {over_idx.tolist()}")
+        logger.info(f"  - valid_over_idx: {valid_over_idx}")
+        logger.info(f"  - len(over_uids): {len(over_uids)}")
+        logger.info(f"  - len(over_actions): {len(over_actions)}")
+        if extra_subset is not None:
+            logger.info(f"  - len(extra_subset): {len(extra_subset)}")
+        else:
+            logger.info(f"  - extra_subset is None")
+        # 2. 发请求（do_action=False → finish=True）
+        _obs, _dones, _valids, _finishs = await self.interact_with_tool_server(
+            over_uids,
+            over_actions,
+            [False] * len(over_uids),   # finish
+            active_mask=torch.ones(len(over_uids), dtype=torch.bool),
+            extra_fields=extra_subset,
+            is_last_step=True,
+        )
+        
+        logger.info(f"[DEBUG] Response lengths:")
+        logger.info(f"  - len(_obs): {len(_obs)}")
+        logger.info(f"  - len(valid_over_idx): {len(valid_over_idx)}")
+        logger.info(f"  - valid_over_idx values: {valid_over_idx}")
+
+        # 3. 记录 last_obs；其余统计项按需添加
+        for loc, glob in enumerate(valid_over_idx):
+            turns_stats_extra["last_obs"][glob] = _obs[loc]
 
     async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
@@ -551,7 +640,19 @@ class AgentActorManager:
                 next_obs_ids
             )
             agent_sampling_params['max_tokens'] = available_context_budget
-            active_mask = active_mask * (~overlong_dones.to(active_mask.dtype).to(active_mask.device))
+            # active_mask = active_mask * (~overlong_dones.to(active_mask.dtype).to(active_mask.device))
+            await self._handle_overlong_finish(
+                overlong_dones,
+                active_mask,
+                traj_ids,
+                responses_str,          # 这里 responses_str 为空串列表但对齐
+                turns_stats_extra,
+                extra_info=rollings.non_tensor_batch.get('extra_info', None),
+            )
+            # -------------------------------------------
+            if overlong_dones.device != active_mask.device:
+                overlong_dones = overlong_dones.to(active_mask.device)
+            active_mask &= (~overlong_dones)
             active_num_list.append(active_mask.sum().item())
             perf_timer.end('initial_tool_call')
 
@@ -656,9 +757,23 @@ class AgentActorManager:
             available_context_budget = min(available_context_budget, self.config.max_action_length)
             agent_sampling_params['max_tokens'] = available_context_budget # for vllm
             agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
-            active_num_list.append(self._update_active_mask_inplace(active_mask, (~overlong_dones).to(active_mask.dtype).to(active_mask.device)))
+            # active_num_list.append(self._update_active_mask_inplace(active_mask, (~overlong_dones).to(active_mask.dtype).to(active_mask.device)))
+
+            await self._handle_overlong_finish(
+                overlong_dones,
+                active_mask,
+                traj_ids,
+                responses_str,          # 这里 responses_str 为空串列表但对齐
+                turns_stats_extra,
+                extra_info=rollings.non_tensor_batch.get('extra_info', None),
+            )
+            # active_mask &= (~overlong_dones)
+            if overlong_dones.device != active_mask.device:
+                overlong_dones = overlong_dones.to(active_mask.device)
+            active_mask &= (~overlong_dones)
+            active_num_list.append(active_mask.sum().item())
+
             perf_timer.end(f'step_{step}_state_updates')
-            
             perf_timer.end(step_timer_key)
 
         perf_timer.end('main_generation_loop')
