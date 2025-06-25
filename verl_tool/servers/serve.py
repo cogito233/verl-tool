@@ -3,7 +3,10 @@ Tool Server - A FastAPI server to manage and execute tools based on incoming req
 Using asyncio for concurrent processing.
 """
 import asyncio
+import json
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Set, Union
 from tqdm import tqdm
 
@@ -37,18 +40,30 @@ class AgentResponse(BaseModel):
 class AsyncToolManager:
     """Manages all tools and their execution using asyncio"""
     
-    def __init__(self, tool_types: Tuple[str], num_workers_per_tool: int = 4, use_tqdm: bool = False, done_if_invalid: bool = False):
+    def __init__(self, tool_types: Tuple[str], num_workers_per_tool: int = 4, use_tqdm: bool = False, done_if_invalid: bool = False, run_id: str = None):
         """
         Initialize the tool manager with specified tools
         
         Args:
             tool_types: Tuple of tool type names to initialize
             num_workers_per_tool: Number of workers for each tool
+            use_tqdm: Whether to use tqdm for progress bars
+            done_if_invalid: Whether to mark episode as done if action is invalid
+            run_id: Unique run identifier for logging
         """
         self.tools: Dict[str, Any] = {}
         self.use_tqdm = use_tqdm
         set_use_tqdm(use_tqdm)
         self.done_if_invalid = done_if_invalid
+        self.run_id = run_id
+        
+        # Initialize logging file if run_id is provided
+        if self.run_id:
+            self.log_file_path = Path(f"server_logs/{self.run_id}.jsonl")
+            logger.info(f"Tool server call logs will be saved to: {self.log_file_path}")
+        else:
+            self.log_file_path = None
+            
         self._initialize_tools(tool_types, num_workers_per_tool)
         
     def _initialize_tools(self, tool_types: Tuple[str], num_workers: int) -> None:
@@ -119,6 +134,41 @@ class AsyncToolManager:
                 return tool_type
                 
         return None
+    
+    def _save_call_record(self, trajectory_ids: List[str], actions: List[str], 
+                         observations: List[str], dones: List[bool], 
+                         valids: List[bool], extra_fields: List[Dict[str, Any]],
+                         tool_types: List[Optional[str]]):
+        """
+        Save tool server call records to jsonl file
+        
+        Args:
+            trajectory_ids: List of trajectory IDs
+            actions: List of action strings  
+            observations: List of observation strings
+            dones: List of done flags
+            valids: List of valid flags
+            extra_fields: List of extra fields for each action
+        """
+        if not self.log_file_path:
+            return
+            
+        try:
+            with open(self.log_file_path, 'a', encoding='utf-8') as f:
+                for i in range(len(trajectory_ids)):
+                    record = {
+                        "traj_id": trajectory_ids[i],
+                        "action": actions[i],
+                        "observation": observations[i],
+                        "done": dones[i],
+                        "valid": valids[i],
+                        "extra_fields": extra_fields[i],
+                        "tool_type": tool_types[i],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except Exception as e:
+            logger.error(f"Failed to save call record: {e}")
     
     async def identify_tool_types(self, actions: List[str], extra_fields: List[Dict[str, Any]]) -> List[Optional[str]]:
         """
@@ -249,6 +299,7 @@ class AsyncToolManager:
                 all_dones[result_idx] = dones[idx_pos]
                 all_valids[result_idx] = valids[idx_pos]
                 
+        self._save_call_record(trajectory_ids, actions, all_observations, all_dones, all_valids, extra_fields, tool_types)
         return all_observations, all_dones, all_valids
 
 
@@ -282,12 +333,17 @@ class AsyncToolServer:
         self.port = port
         self.max_concurrent_requests = max_concurrent_requests
         
+        # Generate run_id based on current timestamp
+        self.run_id = datetime.now().strftime("toolserver_%Y%m%d_%H%M%S")
+        logger.info(f"Tool server run_id: {self.run_id}")
+        
         if not use_ray:
             # Initialize async tool manager
-            self.tool_manager = AsyncToolManager(tool_types, workers_per_tool, use_tqdm, done_if_invalid)
+            self.tool_manager = AsyncToolManager(tool_types, workers_per_tool, use_tqdm, done_if_invalid, self.run_id)
         else:
+            # raise NotImplementedError("Ray is not implemented yet")
             from .ray_utils import RayToolManager
-            self.tool_manager = RayToolManager(tool_types, workers_per_tool, use_tqdm, done_if_invalid)
+            self.tool_manager = RayToolManager(tool_types, workers_per_tool, use_tqdm, done_if_invalid) # Not support logging
         
         # Create FastAPI app
         self.app = FastAPI(
