@@ -1,6 +1,6 @@
 source .venv-server/bin/activate
 
-# export VLLM_USE_V1=1
+export VLLM_USE_V1=1
 ray stop
 ray start --head --dashboard-host=0.0.0.0
 

@@ -8,21 +8,20 @@ dataset_name=r2e_swe_debug
 # dataset_name=r2e_swe_extra_debug
 train_data=data/$dataset_name/train.parquet
 val_data=data/$dataset_name/train.parquet
-model_name=/minimax-dialogue/ruobai/cogito/base_model/R2EGym-7B-Agent
+model_name=/data/minimax-dialogue/users/xiancai/hf_models/R2EGym-32B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
-n_gpus_per_node=4
-n_nodes=1
+n_gpus_per_node=8
+n_nodes=4
 enable_agent=True # enable agent for tool use
 
-# n=8
-# batch_size=32
 n=8
-batch_size=4
+batch_size=16
+# n=4
+# batch_size=8
 
 ppo_mini_batch_size=4
 max_prompt_length=2048
 max_response_length=30720 
-# max_response_length=20480 
 max_obs_length=8192
 temperature=0.5
 strategy="fsdp" # remove _agent for normal verl behavior
@@ -31,14 +30,14 @@ token of
 # each action, which are </answer> and </python> respectively
 
 # === begin, added by Zhiheng ===
-max_action_length=1024
+max_action_length=2048
 rolling_with_prompt=False
 call_tool_first=True
 truncate_obs_side=left # This is weird but required in the current code
 truncate_response_side=left
 min_action_num=5
-mirco_batch_size=1
-mirco_batch_size_non_train=1
+mirco_batch_size=2
+mirco_batch_size_non_train=2
 max_start_length=2048 # System prompt is always length 800+, not the bottleneck
 use_dynamic_bsz=True # faster
 enable_mtrl=True
@@ -50,7 +49,7 @@ critic_lr=5e-7
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-baseline-0615"
+run_name="${model_pretty_name}-baseline-0619-bs128"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
@@ -100,7 +99,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     +actor_rollout_ref.agent.no_action_as_stop=False \
     +actor_rollout_ref.actor.enable_agent=$enable_agent \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.temperature=$temperature \
     actor_rollout_ref.rollout.top_k=-1 \

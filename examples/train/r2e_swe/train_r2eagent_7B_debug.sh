@@ -8,22 +8,23 @@ dataset_name=r2e_swe_debug
 # dataset_name=r2e_swe_extra_debug
 train_data=data/$dataset_name/train.parquet
 val_data=data/$dataset_name/train.parquet
-model_name=/minimax-dialogue/ruobai/cogito/base_model/R2EGym-7B-Agent
+model_save_name=R2EGym-7B-Agent
+model_name=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
-n_gpus_per_node=4
+n_gpus_per_node=2
 n_nodes=1
 enable_agent=True # enable agent for tool use
 
 # n=8
 # batch_size=32
-n=8
-batch_size=4
+n=2
+batch_size=2
 
-ppo_mini_batch_size=4
+ppo_mini_batch_size=2
 max_prompt_length=2048
-max_response_length=30720 
-# max_response_length=20480 
-max_obs_length=8192
+# max_response_length=30720 
+max_response_length=2048
+max_obs_length=2048
 temperature=0.5
 strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
@@ -49,8 +50,8 @@ lr_multiple=1
 critic_lr=5e-7
 actor_lr=1e-6
 
-model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-baseline-0615"
+model_pretty_name=$(echo $model_save_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
+run_name="${model_pretty_name}-baseline-0624"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
