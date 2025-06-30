@@ -26,7 +26,7 @@ batch_size=8
 ppo_mini_batch_size=4
 max_prompt_length=2048
 max_response_length=20480 
-max_obs_length=8192
+max_obs_length=4096
 temperature=0.5
 strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
@@ -35,7 +35,7 @@ token of
 
 # === begin, added by Zhiheng ===
 rollout_mode='sync'
-max_action_length=2048
+max_action_length=1024
 rolling_with_prompt=False
 call_tool_first=True
 truncate_obs_side=left # This is weird but required in the current code
@@ -54,7 +54,7 @@ critic_lr=5e-7
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-baseline-0623-bs32"
+run_name="${model_pretty_name}-${dataset_name}-baseline-0623-bs32-sync"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 

@@ -19,7 +19,7 @@ n_nodes=1
 enable_agent=True # enable agent for tool use
 
 n=8
-batch_size=32
+batch_size=16
 # n=4
 # batch_size=8
 

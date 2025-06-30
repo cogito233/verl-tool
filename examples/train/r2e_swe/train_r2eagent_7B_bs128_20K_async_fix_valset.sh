@@ -1,57 +1,70 @@
-ray stop
-CUDA_VISIBLE_DEVICES=0,1,2,3 ray start --head --dashboard-host=0.0.0.0  --num-cpus=32
+# ray stop
+# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --head --dashboard-host=0.0.0.0 
+source .venv-server/bin/activate
+export WANDB_ENTITY=zhihenglyu-cs
+export NCCL_DEBUG=INFO
+export VLLM_USE_V1=1
 
 set -x
-dataset_name=wikiQA_debug
+# dataset_name=r2e_swe_debug
+dataset_name=r2e_sync_extra_fix_valset
+# dataset_name=r2e_swe_extra_debug
 train_data=data/$dataset_name/train.parquet
-val_data=data/$dataset_name/test.parquet
-# model_name=Qwen/Qwen2.5-3B
-# model_name=/home/zhiheng/cogito/base_models/qwen2.5-0.5b-wiki
-# model_name=/home/zhiheng/verl/experiments/wiki/qwen2.5-1.5b-direct_plain-hard
-model_name=/data/zhiheng/cogito/base_models/qwen2.5-3b-1epoch-hard
+val_data=data/$dataset_name/dev.parquet
+model_name=R2EGym-7B-Agent
+model_path=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
-n_gpus_per_node=4
+n_gpus_per_node=8
 n_nodes=1
-n=4
+enable_agent=True # enable agent for tool use
+
+# n=8
+# batch_size=32
+n=8
 batch_size=16
+
 ppo_mini_batch_size=4
-max_prompt_length=2048 # bottleneck of the rollout, by default keep the right side
-max_response_length=5120 # bottleneck of the right side, will used in the training
-max_obs_length=2048 # Not the bottleneck, the obs is much shorter than this
+max_prompt_length=2048
+max_response_length=20480 
+max_obs_length=4096
 temperature=0.5
-strategy="fsdp_agent" # remove _agent for normal verl behavior
-valid_actions="[]" # "[answer,python]" are two valid actions, they are used to determine the stop
+strategy="fsdp" # remove _agent for normal verl behavior
+valid_actions="[]" 
 token of
 # each action, which are </answer> and </python> respectively
 
 # === begin, added by Zhiheng ===
-max_action_length=512
+rollout_mode='async'
+max_action_length=1536
 rolling_with_prompt=False
 call_tool_first=True
 truncate_obs_side=left # This is weird but required in the current code
 truncate_response_side=left
 min_action_num=5
 mirco_batch_size=1
-mirco_batch_size_non_train=2
-max_start_length=1536 # System prompt is always length 800+, not the bottleneck
+mirco_batch_size_non_train=1
+max_start_length=2048 # System prompt is always length 800+, not the bottleneck
+use_dynamic_bsz=True # faster
+enable_mtrl=True
+ulysses_sequence_parallel_size=1 # set to 1 for normal verl behavior, otherwise it will cause OOM
 # === end, added by Zhiheng ===
 
-lr_multiple=1000
-critic_lr=5e-4
-actor_lr=1e-3
+lr_multiple=1
+critic_lr=5e-7
+actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${lr_multiple}"
+run_name="${model_pretty_name}-${dataset_name}-baseline-0626-bs128-async-fix_valset"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-host=0.0.0.0
-port=$(shuf -i 30000-31000 -n 1)
-# port=30815
+host=localhost
+# # port=$(shuf -i 30000-31000 -n 1)
+port=30815
 tool_server_url=http://$host:$port/get_observation
-python -m verl_tool.servers.serve --host $host --port $port --tool_type "text_browser" &
-server_pid=$!
-echo "Server (pid=$server_pid) started at $tool_server_url"
+# python -m verl_tool.servers.serve --host $host --port $port --tool_type "text_browser" &
+# server_pid=$!
+# echo "Server (pid=$server_pid) started at $tool_server_url"
 
 # actor_rollout_ref.rollout.enforce_eager=False \
 # actor_rollout_ref.rollout.free_cache_engine=False \
@@ -65,12 +78,15 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     data.train_batch_size=$batch_size \
     data.max_prompt_length=$max_prompt_length \
     data.max_response_length=$max_response_length \
-    reward_model.reward_manager=wikiRL \
-    actor_rollout_ref.model.path=$model_name \
+    reward_model.reward_manager=r2eswe \
+    actor_rollout_ref.model.path=$model_path \
+    actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.optim.lr=$actor_lr \
     actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$mirco_batch_size \
     actor_rollout_ref.actor.strategy=$strategy \
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
+    +actor_rollout_ref.agent.enable_mtrl=$enable_mtrl \
     +actor_rollout_ref.agent.tool_server_url=$tool_server_url \
     +actor_rollout_ref.agent.max_prompt_length=$max_prompt_length \
     +actor_rollout_ref.agent.max_response_length=$max_response_length \
@@ -82,32 +98,36 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     +actor_rollout_ref.agent.min_action_num=$min_action_num \
     +actor_rollout_ref.agent.truncate_response_side=$truncate_response_side \
     +actor_rollout_ref.agent.truncate_obs_side=$truncate_obs_side \
-    +actor_rollout_ref.agent.max_turns=5 \
+    +actor_rollout_ref.agent.max_turns=30 \
     +actor_rollout_ref.agent.num_gpus=$n_gpus_per_node \
     +actor_rollout_ref.agent.valid_actions=$valid_actions \
     +actor_rollout_ref.agent.no_action_as_stop=False \
+    +actor_rollout_ref.actor.enable_agent=$enable_agent \
+    actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.temperature=$temperature \
     actor_rollout_ref.rollout.top_k=-1 \
     actor_rollout_ref.rollout.n=$n \
     actor_rollout_ref.rollout.top_p=1.0 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
+    actor_rollout_ref.ref.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     critic.optim.lr=$critic_lr \
     critic.strategy=$strategy \
-    critic.model.path=$model_name \
+    critic.model.path=$model_path \
     critic.ppo_micro_batch_size_per_gpu=$mirco_batch_size \
+    critic.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='wikiRL_lr' \
+    trainer.project_name='r2e_swe' \
     trainer.experiment_name=$run_name \
     trainer.val_before_train=False \
     trainer.default_hdfs_dir=null \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
     trainer.save_freq=10 \
-    trainer.test_freq=10 \
+    trainer.test_freq=50 \
     trainer.total_epochs=1
 
 
