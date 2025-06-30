@@ -43,22 +43,80 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         client = AsyncOpenAI(base_url=f"http://{address}/v1", api_key="token-abc123", timeout=None, max_retries=0)
         return await client.completions.create(**complete_request)
 
+    # async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
+    #     try:
+    #         extra_body = complete_request.pop("extra_body", {})
+    #         complete_request.update(extra_body or {})
+    #         extra_headers = complete_request.pop("extra_headers")
+    #         timeout = aiohttp.ClientTimeout(total=None)
+    #         session = aiohttp.ClientSession(timeout=timeout)
+    #         async with session.post(
+    #             url=f"http://{address}/v1/completions",
+    #             headers={"Authorization": "Bearer token-abc123", **extra_headers},
+    #             json=complete_request,
+    #         ) as resp:
+    #             data = await resp.json()
+    #             return Completion(**data)
+    #     finally:
+    #         await session.close()
+    
+
     async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
-        try:
-            extra_body = complete_request.pop("extra_body", {})
-            complete_request.update(extra_body or {})
-            extra_headers = complete_request.pop("extra_headers")
-            timeout = aiohttp.ClientTimeout(total=None)
-            session = aiohttp.ClientSession(timeout=timeout)
-            async with session.post(
-                url=f"http://{address}/v1/completions",
-                headers={"Authorization": "Bearer token-abc123", **extra_headers},
-                json=complete_request,
-            ) as resp:
-                data = await resp.json()
-                return Completion(**data)
-        finally:
-            await session.close()
+        timeout = aiohttp.ClientTimeout(
+            total=180,
+            connect=10,
+            sock_connect=5,
+            sock_read=60,
+        )
+        max_retries = 3
+        backoff_base = 2
+
+        # 解构额外字段
+        extra_body = complete_request.pop("extra_body", {})
+        extra_headers = complete_request.pop("extra_headers", {})
+
+        # 合并请求体
+        complete_request.update(extra_body or {})
+        url = f"http://{address}/v1/completions"
+        headers = {"Authorization": "Bearer token-abc123", **extra_headers}
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url=url,
+                        headers=headers,
+                        json=complete_request,
+                    ) as resp:
+                        data = await resp.json()
+                        if resp.status == 200:
+                            return Completion(**data)
+                        else:
+                            logger.warning(f"[Attempt {attempt}] Non-200 status {resp.status}: {data}")
+                            raise aiohttp.ClientResponseError(
+                                request_info=resp.request_info,
+                                history=resp.history,
+                                status=resp.status,
+                                message=str(data),
+                                headers=resp.headers,
+                            )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Save some logs to attempt_logs/http_error_vllm_server.jsonl
+                if not os.path.exists('attempt_logs'):
+                    os.makedirs('attempt_logs')
+                log_line = {    
+                    "timestamp": time.time(),
+                    "attempt": attempt,
+                    "error": repr(e),
+                    "data": complete_request
+                }
+                with open(f'attempt_logs/http_error_vllm_server.jsonl', 'a') as f:
+                    f.write(json.dumps(log_line) + "\n")
+                logger.warning(f"[Attempt {attempt}] Exception: {repr(e)}")
+                if attempt == max_retries:
+                    logger.error(f"All {max_retries} attempts failed for address {address}")
+                    raise
+                await asyncio.sleep(backoff_base ** attempt)  # 指数退避
 
     async def _submit_completions(
         self,

@@ -176,6 +176,8 @@ class AgentActorManager:
                             else:
                                 do_action = False
                         else:
+                            if not responses_str[i].endswith(self.config.turn_end_token):
+                                responses_str[i] += self.config.turn_end_token
                             do_action = True
                     else:
                         # always do action, decided by the server about whether an action stops
@@ -192,6 +194,8 @@ class AgentActorManager:
                             if turn_end_token_idx == -1:
                                 responses_str[i] += self.config.turn_end_token
                         do_action = True
+                    if not responses_str[i].endswith(self.config.turn_end_token):
+                        print(f"responses_str {i}: {responses_str[i]}")
                     do_actions.append(do_action)
             else:
                 if isinstance(responses, torch.Tensor):
@@ -1035,18 +1039,60 @@ class AgentActorManager:
             logger.error(f"First 100 chars of response: {response.text[:100]}")
             raise
     
+    # async def _aiohttp_request(self, data):
+    #     try:
+    #         timeout = aiohttp.ClientTimeout(total=None)
+    #         session = aiohttp.ClientSession(timeout=timeout)
+    #         async with session.post(
+    #             url=self.config.tool_server_url,
+    #             json=data,
+    #         ) as resp:
+    #             data = await resp.json()
+    #             return data
+    #     finally:
+    #         await session.close()
+
     async def _aiohttp_request(self, data):
-        try:
-            timeout = aiohttp.ClientTimeout(total=None)
-            session = aiohttp.ClientSession(timeout=timeout)
-            async with session.post(
-                url=self.config.tool_server_url,
-                json=data,
-            ) as resp:
-                data = await resp.json()
-                return data
-        finally:
-            await session.close()
+        timeout = aiohttp.ClientTimeout(
+            total=900,
+            connect=10,
+            sock_connect=10,
+            sock_read=600,
+        )
+        max_retries = 3
+        backoff_base = 2  # 指数退避基础时间
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url=self.config.tool_server_url,
+                        json=data,
+                    ) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                        else:
+                            error_text = await resp.text()
+                            logger.warning(f"Attempt {attempt}: Status {resp.status} - {error_text}")
+                            raise aiohttp.ClientError(f"Non-200 status: {resp.status}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Save some logs to attempt_logs/http_error_tool_server.jsonl
+                if not os.path.exists('attempt_logs'):
+                    os.makedirs('attempt_logs')
+                log_line = {    
+                    "timestamp": time.time(),
+                    "attempt": attempt,
+                    "error": repr(e),
+                    "data": data
+                }
+                with open(f'attempt_logs/http_error_tool_server.jsonl', 'a') as f:
+                    f.write(json.dumps(log_line) + "\n")
+                logger.warning(f"Attempt {attempt} failed: {repr(e)}")
+                if attempt == max_retries:
+                    logger.error("All retries failed.")
+                    raise
+                await asyncio.sleep(backoff_base ** attempt)  # 指数退避
+
         
     async def send_batch_requests_async(self, batch_data: Dict[str, Any]) -> Dict[str, Any]:
         """Robust version with retry logic"""
