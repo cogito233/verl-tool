@@ -145,17 +145,58 @@ class R2EEnvActor:
         else:
             raise ValueError(f"Invalid reward action: {action_str}")
         
+    # def close_env(self):
+    #     # print(f"in the close_env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
+    #     # Write to env_deleted.jsonl the following information: trajectory_id, timestamp, job_name
+    #     json_content = {
+    #         "timestamp": time.time(),
+    #         "job_name": self.env.runtime.job_name
+    #     }
+    #     print(f"Deleting env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
+    #     with open("env_deleted.jsonl", "a") as f:
+    #         f.write(json.dumps(json_content) + "\n")
+    #     self.env.close()
+
     def close_env(self):
-        # print(f"in the close_env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
-        # Write to env_deleted.jsonl the following information: trajectory_id, timestamp, job_name
-        json_content = {
-            "timestamp": time.time(),
-            "job_name": self.env.runtime.job_name
-        }
-        print(f"Deleting env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
-        with open("env_deleted.jsonl", "a") as f:
-            f.write(json.dumps(json_content) + "\n")
-        self.env.close()
+        """关闭环境，带60秒超时机制"""
+        import threading
+        import queue
+        
+        # 用于存储结果的队列
+        result_queue = queue.Queue()
+        
+        def close_env_worker():
+            """在单独线程中执行关闭操作"""
+            try:
+                json_content = {
+                    "timestamp": time.time(),
+                    "job_name": getattr(self.env.runtime, 'job_name', 'unknown')
+                }
+                print(f"Deleting env, timestamp: {time.time()}, job_name: {json_content['job_name']}")
+                with open("env_deleted.jsonl", "a") as f:
+                    f.write(json.dumps(json_content) + "\n")
+                self.env.close()
+                result_queue.put("success")
+            except Exception as e:
+                print(f"Error in close_env: {e}")
+                result_queue.put(f"error: {e}")
+        
+        # 启动工作线程
+        worker_thread = threading.Thread(target=close_env_worker)
+        worker_thread.daemon = True  # 设置为守护线程
+        worker_thread.start()
+        
+        # 等待结果，最多60秒
+        try:
+            result = result_queue.get(timeout=60)
+            if result.startswith("error:"):
+                print(f"close_env failed: {result}")
+        except queue.Empty:
+            print(f"close_env timeout after 60 seconds, job_name: {getattr(self.env.runtime, 'job_name', 'unknown')}")
+            # 注意：超时后线程可能仍在运行，但我们不再等待它
+        finally:
+            # 确保线程完成或超时后继续
+            pass
 
 @register_tool
 class SandboxR2ETool(BaseTool):
@@ -243,6 +284,85 @@ class SandboxR2ETool(BaseTool):
         print(f"Action: {action}, maybe it is invalid")
         return action, True
 
+#     def conduct_action(self, trajectory_id: str, action: str, extra_field: dict):
+#         """
+#         Execute a *single* action on the environment for `trajectory_id`.
+
+#         Returns
+#         -------
+#         obs : str
+#             Environment observation (empty string if episode finished).
+#         done : bool
+#             Whether the episode ended with this step.
+#         valid : bool
+#             Whether the action itself was valid.
+#         """
+# #         print(
+# #     "--------------------------------\n"
+# #     "conduct_action\n"
+# #     f"trajectory_id {trajectory_id}\n"
+# #     f"action {action}\n"
+# #     f"extra_field {extra_field}\n"
+# #     "--------------------------------"
+# # )
+# #         exit(1)
+#         # 1) Ensure an actor exists (lazy creation).
+#         actor = self.load_env(trajectory_id)
+#         if actor is None:
+#             # Create a brand-new R2EEnvActor for this trajectory.
+#             ds = extra_field.get("ds", extra_field.get("extra_fields", extra_field))
+#             # Default command files
+#             command_files = [
+#                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search.py"),
+#                 # Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search_dir.py"),
+#                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/file_editor.py"),
+#                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/execute_bash.py"),
+#                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/finish.py")
+#             ]
+#             # Filter existing command files
+#             existing_command_files = [f for f in command_files if f.exists()]
+            
+#             actor = R2EEnvActor.remote(ds, existing_command_files)
+#             self.save_env(trajectory_id, actor)
+
+#         # 2) Decide whether we are rendering the first page or taking a step.
+#         fut = (
+#             actor.start_env.remote()
+#             if action is None or action == ""
+#             else actor.step_env.remote(action)
+#         )
+
+#         # 3) Wait for the Ray RPC to finish (blocks the calling thread only).
+#         result = ray.get(fut)
+#         if isinstance(result, tuple):           # step_env
+#             obs, done, valid = result
+#         else:                                   # start_env
+#             obs, done, valid = result, False, True
+
+#         # Debug output
+#         # output = (
+#         #     "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+#         #     f"trajectory_id: {trajectory_id}\n"
+#         #     f"action: {action}\n"
+#         #     f"extra_field: {extra_field}\n"
+#         #     f"observation: {obs}\n"
+#         #     f"done: {done}, valid: {valid}\n"
+#         #     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+#         # )
+#         # print(output)
+
+#         # 4) Refresh LRU order *after* the step.
+#         if trajectory_id in self.actor_creation_order:
+#             self.actor_creation_order.remove(trajectory_id)
+#         self.actor_creation_order.append(trajectory_id)
+
+#         # 5) Clean-up if the episode finished.
+
+#         if not valid:
+#             obs = f"The action {action} is invalid, please retry, obs is {obs}"
+
+#         return obs, done, valid
+
     def conduct_action(self, trajectory_id: str, action: str, extra_field: dict):
         """
         Execute a *single* action on the environment for `trajectory_id`.
@@ -256,15 +376,6 @@ class SandboxR2ETool(BaseTool):
         valid : bool
             Whether the action itself was valid.
         """
-#         print(
-#     "--------------------------------\n"
-#     "conduct_action\n"
-#     f"trajectory_id {trajectory_id}\n"
-#     f"action {action}\n"
-#     f"extra_field {extra_field}\n"
-#     "--------------------------------"
-# )
-#         exit(1)
         # 1) Ensure an actor exists (lazy creation).
         actor = self.load_env(trajectory_id)
         if actor is None:
@@ -291,32 +402,28 @@ class SandboxR2ETool(BaseTool):
             else actor.step_env.remote(action)
         )
 
-        # 3) Wait for the Ray RPC to finish (blocks the calling thread only).
-        result = ray.get(fut)
-        if isinstance(result, tuple):           # step_env
-            obs, done, valid = result
-        else:                                   # start_env
-            obs, done, valid = result, False, True
-
-        # Debug output
-        # output = (
-        #     "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
-        #     f"trajectory_id: {trajectory_id}\n"
-        #     f"action: {action}\n"
-        #     f"extra_field: {extra_field}\n"
-        #     f"observation: {obs}\n"
-        #     f"done: {done}, valid: {valid}\n"
-        #     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
-        # )
-        # print(output)
+        # 3) Wait for the Ray RPC to finish with 300s timeout
+        try:
+            result = ray.get(fut, timeout=300)  # 300秒超时
+            if isinstance(result, tuple):           # step_env
+                obs, done, valid = result
+            else:                                   # start_env
+                obs, done, valid = result, False, True
+        except ray.exceptions.GetTimeoutError:
+            # 超时处理 - 返回指定的值
+            print(f"Action timeout after 300 seconds for trajectory_id: {trajectory_id}, action: {action}")
+            return "<reward>0.0</reward>", True, True
+        except Exception as e:
+            # 其他异常处理
+            print(f"Error in conduct_action for trajectory_id: {trajectory_id}, error: {e}")
+            return f"Error: {str(e)}", False, False
 
         # 4) Refresh LRU order *after* the step.
         if trajectory_id in self.actor_creation_order:
             self.actor_creation_order.remove(trajectory_id)
         self.actor_creation_order.append(trajectory_id)
 
-        # 5) Clean-up if the episode finished.
-
+        # 5) Handle invalid actions
         if not valid:
             obs = f"The action {action} is invalid, please retry, obs is {obs}"
 

@@ -9,8 +9,8 @@ set -x
 # dataset_name=r2e_swe_debug
 dataset_name=r2e_sync_extra_fix_valset
 # dataset_name=r2e_swe_extra_debug
-train_data=data/$dataset_name/train.parquet
-val_data=data/$dataset_name/dev.parquet
+train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
+val_data=/root/code/rl_r2e/data/$dataset_name/dev.parquet
 model_name=R2EGym-7B-Agent
 model_path=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
@@ -54,11 +54,12 @@ critic_lr=5e-7
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-baseline-0626-bs128-async-fix_valset"
+run_name="${model_pretty_name}-${dataset_name}-0630-bs128-async-fix_valset-mnode"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-host=localhost
+# host=localhost
+host=$(hostname -I | awk '{print $1}')
 # # port=$(shuf -i 30000-31000 -n 1)
 port=30815
 tool_server_url=http://$host:$port/get_observation
