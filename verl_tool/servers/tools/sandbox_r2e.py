@@ -2,9 +2,13 @@ import ray
 import re
 import json
 import time
+import asyncio  
+import contextlib
+import io
+import sys 
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 from .base import BaseTool, register_tool
 from r2egym.agenthub.action import Action
@@ -17,6 +21,17 @@ from r2egym.agenthub.tools import (
     bash_execute_tool,
     finish_tool,
 )
+
+@contextlib.contextmanager
+def suppress_stdout_stderr():
+    """Temporarily redirect both stdout and stderr to /dev/null-like objects."""
+    new_target = io.StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout, sys.stderr = new_target, new_target
+        yield
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
 
 @ray.remote
 class R2EEnvActor:
@@ -42,7 +57,7 @@ class R2EEnvActor:
             self.env.add_commands(self.command_files)
             print("add command files")
         
-        print(self.env.commands)
+        # print(self.env.commands)
 
     def start_env(self) -> str:
         """
@@ -101,7 +116,8 @@ class R2EEnvActor:
                 return "Failed to parse action. Invalid XML format or missing function name.", False, False
             
             # Execute action (same pattern as agent.py)
-            obs, reward, done, info = self.env.step(action, timeout=900)
+            with suppress_stdout_stderr():
+                obs, reward, done, info = self.env.step(action, timeout=900)
 
             # if done, then pad the reward into the observation
             if done:
@@ -122,11 +138,24 @@ class R2EEnvActor:
         Reward the environment, return the reward, validity and test output
         """
         if action_str == "<compute_reward>sandbox_r2e</compute_reward>":
-            reward, test_output = self.env.runtime._calculate_reward(get_test_output=True)
+            with suppress_stdout_stderr():
+                reward, test_output = self.env.runtime._calculate_reward(get_test_output=True)
             reward = float(reward)
             return reward, True, test_output
         else:
             raise ValueError(f"Invalid reward action: {action_str}")
+        
+    def close_env(self):
+        # print(f"in the close_env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
+        # Write to env_deleted.jsonl the following information: trajectory_id, timestamp, job_name
+        json_content = {
+            "timestamp": time.time(),
+            "job_name": self.env.runtime.job_name
+        }
+        print(f"Deleting env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
+        with open("env_deleted.jsonl", "a") as f:
+            f.write(json.dumps(json_content) + "\n")
+        self.env.close()
 
 @register_tool
 class SandboxR2ETool(BaseTool):
@@ -137,7 +166,7 @@ class SandboxR2ETool(BaseTool):
     """
     tool_type = "sandbox_r2e"
 
-    def __init__(self, num_workers=32):
+    def __init__(self, num_workers=4):
         super().__init__(num_workers)
         # Maps trajectory_id to Ray Actor
         self.env_actors = {}
@@ -175,7 +204,11 @@ class SandboxR2ETool(BaseTool):
     def delete_env(self, trajectory_id):
         """Kill and remove the actor."""
         # return
+        #print(f"in the self deleting env, trajectory_id: {trajectory_id}, trajectory_id in self.env_actors = {trajectory_id in self.env_actors}")
         if trajectory_id in self.env_actors:
+            future = self.env_actors[trajectory_id].close_env.remote()
+            ray.get(future)
+            # self.env_actors[trajectory_id].close_env.remote()
             ray.kill(self.env_actors[trajectory_id], no_restart=True)
             del self.env_actors[trajectory_id]
         if trajectory_id in self.actor_creation_order:
@@ -239,11 +272,11 @@ class SandboxR2ETool(BaseTool):
             ds = extra_field.get("ds", extra_field.get("extra_fields", extra_field))
             # Default command files
             command_files = [
-                Path("/minimax-dialogue/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search.py"),
-                # Path("/minimax-dialogue/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search_dir.py"),
-                Path("/minimax-dialogue/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/file_editor.py"),
-                Path("/minimax-dialogue/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/execute_bash.py"),
-                Path("/minimax-dialogue/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/finish.py")
+                Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search.py"),
+                # Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search_dir.py"),
+                Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/file_editor.py"),
+                Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/execute_bash.py"),
+                Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/finish.py")
             ]
             # Filter existing command files
             existing_command_files = [f for f in command_files if f.exists()]
@@ -307,6 +340,7 @@ class SandboxR2ETool(BaseTool):
         dones        : list[bool]
         valid_flags  : list[bool]
         """
+        # print(f"get_observations: {trajectory_ids}, {actions}")
         n = len(trajectory_ids)
         observations = [""]   * n
         dones        = [False] * n
@@ -343,9 +377,18 @@ class SandboxR2ETool(BaseTool):
                 if err:
                     print(f"[ERROR] trajectory_id={trajectory_ids[i]}: {err}")
 
-        for i in range(len(trajectory_ids)):
-            if extra_fields[i].get('is_last_step', False) or dones[i]: # To Check, not sure if we should delete the env_dones
+        # print(f"Checkpoint 1, len(trajectory_ids): {len(trajectory_ids)}")
+        # 并发执行delete_env
+        def _delete_env_if_needed(i):
+            # print(f"deleting env, trajectory_id: {trajectory_ids[i]}, is_last_step: {extra_fields[i].get('is_last_step', False)}, done: {dones[i]}")
+            if extra_fields[i].get('is_last_step', False) or dones[i]:
                 self.delete_env(trajectory_ids[i])
+
+        with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
+            pool.map(_delete_env_if_needed, range(len(trajectory_ids)))
+
+        # print(f"get_observations finished, observations: {observations}, dones: {dones}, valid_flags: {valid_flags}")
+        # print(f"env_actors: {self.env_actors}")
 
         return observations, dones, valid_flags
 
