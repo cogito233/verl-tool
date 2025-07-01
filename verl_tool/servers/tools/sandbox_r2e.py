@@ -8,7 +8,7 @@ import io
 import sys 
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, TimeoutError, as_completed
 
 from .base import BaseTool, register_tool
 from r2egym.agenthub.action import Action
@@ -43,6 +43,12 @@ class R2EEnvActor:
             ds: Dataset entry containing docker_image and other info
             command_files: Command files to add to environment
         """
+        # print(f"in the R2EEnvActor, ds: {ds}")
+        # import json
+        # # save to example.json
+        # with open("example.json", "w") as f:
+        #     json.dump(ds, f)
+        # exit(1)
         self.ds = ds
         self.command_files = command_files or []
         
@@ -117,7 +123,7 @@ class R2EEnvActor:
             
             # Execute action (same pattern as agent.py)
             with suppress_stdout_stderr():
-                obs, reward, done, info = self.env.step(action, timeout=900)
+                obs, reward, done, info = self.env.step(action, timeout=180)
 
             # if done, then pad the reward into the observation
             if done:
@@ -158,45 +164,26 @@ class R2EEnvActor:
     #     self.env.close()
 
     def close_env(self):
-        """关闭环境，带60秒超时机制"""
-        import threading
-        import queue
-        
-        # 用于存储结果的队列
-        result_queue = queue.Queue()
-        
-        def close_env_worker():
-            """在单独线程中执行关闭操作"""
-            try:
-                json_content = {
-                    "timestamp": time.time(),
-                    "job_name": getattr(self.env.runtime, 'job_name', 'unknown')
-                }
-                print(f"Deleting env, timestamp: {time.time()}, job_name: {json_content['job_name']}")
-                with open("env_deleted.jsonl", "a") as f:
-                    f.write(json.dumps(json_content) + "\n")
-                self.env.close()
-                result_queue.put("success")
-            except Exception as e:
-                print(f"Error in close_env: {e}")
-                result_queue.put(f"error: {e}")
-        
-        # 启动工作线程
-        worker_thread = threading.Thread(target=close_env_worker)
-        worker_thread.daemon = True  # 设置为守护线程
-        worker_thread.start()
-        
-        # 等待结果，最多60秒
+        """关闭环境，带超时机制"""
         try:
-            result = result_queue.get(timeout=60)
-            if result.startswith("error:"):
-                print(f"close_env failed: {result}")
-        except queue.Empty:
-            print(f"close_env timeout after 60 seconds, job_name: {getattr(self.env.runtime, 'job_name', 'unknown')}")
-            # 注意：超时后线程可能仍在运行，但我们不再等待它
-        finally:
-            # 确保线程完成或超时后继续
-            pass
+            json_content = {
+                "timestamp": time.time(),
+                "job_name": getattr(self.env.runtime, 'job_name', 'unknown')
+            }
+            print(f"Deleting env, timestamp: {time.time()}, job_name: {json_content['job_name']}")
+            
+            # 使用 ray 的超时机制而不是自己实现
+            with open("env_deleted.jsonl", "a") as f:
+                f.write(json.dumps(json_content) + "\n")
+            
+            # 如果 env.close() 可能卡住，可以考虑跳过或使用简单的清理
+            try:
+                self.env.close()
+            except Exception as e:
+                print(f"Error in env.close(): {e}")
+                
+        except Exception as e:
+            print(f"Error in close_env: {e}")
 
 @register_tool
 class SandboxR2ETool(BaseTool):
@@ -243,18 +230,28 @@ class SandboxR2ETool(BaseTool):
             self.actor_creation_order.append(trajectory_id)
 
     def delete_env(self, trajectory_id):
-        """Kill and remove the actor."""
-        # return
-        #print(f"in the self deleting env, trajectory_id: {trajectory_id}, trajectory_id in self.env_actors = {trajectory_id in self.env_actors}")
         if trajectory_id in self.env_actors:
-            future = self.env_actors[trajectory_id].close_env.remote()
-            ray.get(future)
-            # self.env_actors[trajectory_id].close_env.remote()
-            ray.kill(self.env_actors[trajectory_id], no_restart=True)
-            del self.env_actors[trajectory_id]
+            try:
+                future = self.env_actors[trajectory_id].close_env.remote()
+                # 添加超时，比如10秒
+                ray.get(future, timeout=30)
+            except ray.exceptions.GetTimeoutError:
+                print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
+            except Exception as e:
+                print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
+            
+            # 无论是否超时，都强制kill
+            try:
+                ray.kill(self.env_actors[trajectory_id], no_restart=True)
+            except Exception as e:
+                print(f"Error killing actor for trajectory_id: {trajectory_id}: {e}")
+            
+            if trajectory_id in self.env_actors:
+                del self.env_actors[trajectory_id]
+        
         if trajectory_id in self.actor_creation_order:
             self.actor_creation_order.remove(trajectory_id)
-
+    
     def parse_action(self, action):
         """
         检查action是否为有效的R2E动作格式。
@@ -431,73 +428,170 @@ class SandboxR2ETool(BaseTool):
 
     def get_observations(self, trajectory_ids, actions, extra_fields):
         """
-        Batched version of `conduct_action` with thread-pool parallelism.
-        (A process-pool is **not** required; Ray already runs the envs
-        out-of-process.)
-
-        Parameters
-        ----------
-        trajectory_ids : list[str]
-        actions        : list[str | None]
-        extra_fields   : list[dict]
-
-        Returns
-        -------
-        observations : list[str]
-        dones        : list[bool]
-        valid_flags  : list[bool]
+        Batched version with proper timeout handling for individual tasks
         """
-        # print(f"get_observations: {trajectory_ids}, {actions}")
+        from concurrent.futures import wait, FIRST_COMPLETED, ALL_COMPLETED
+        
         n = len(trajectory_ids)
-        observations = [""]   * n
-        dones        = [False] * n
-        valid_flags  = [True]  * n
-
-        # ----------------------------------------------------------------- #
-        # Parallel fan-out using a thread pool                              #
-        # ----------------------------------------------------------------- #
+        observations = [""] * n
+        dones = [False] * n
+        valid_flags = [True] * n
 
         actions_with_last_step = []
         for i in range(len(trajectory_ids)):
-            if extra_fields[i].get('is_last_step', False): # 强行把last step改成calculate reward
-                actions_with_last_step.append("<compute_reward>sandbox_r2e</compute_reward>") # If there is last step, directly compute the reward
+            if extra_fields[i].get('is_last_step', False):
+                actions_with_last_step.append("<compute_reward>sandbox_r2e</compute_reward>")
             else:
                 actions_with_last_step.append(actions[i])
 
         def _worker(idx: int):
-            tid   = trajectory_ids[idx]
-            act   = actions_with_last_step[idx] # Changed from actions if last step
+            tid = trajectory_ids[idx]
+            act = actions_with_last_step[idx]
             extra = extra_fields[idx].get("extra_fields", extra_fields[idx])
             try:
-                return (*self.conduct_action(tid, act, extra), None)
+                return idx, *self.conduct_action(tid, act, extra), None
             except Exception as e:
-                raise e
-                return ("", False, False, e)   # bubble error to main thread
+                return idx, "", False, False, e
 
+        # print(f"Checkpoint 1, Start to conduct action")
+        
         with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
-            futures = [pool.submit(_worker, i) for i in range(n)]
-            for i, fut in enumerate(futures):
-                obs, done, valid, err = fut.result()
-                observations[i] = obs
-                dones[i]        = done
-                valid_flags[i]  = valid
-                if err:
-                    print(f"[ERROR] trajectory_id={trajectory_ids[i]}: {err}")
+            # Create all futures
+            future_to_idx = {pool.submit(_worker, i): i for i in range(n)}
+            
+            # Wait for all futures with a timeout
+            # 给一个合理的总超时时间（比单个超时稍长）
+            done_futures, pending_futures = wait(
+                future_to_idx.keys(), 
+                timeout=max(340, n * 2.5),  # 比单个超时(120s)稍长一点
+                return_when=ALL_COMPLETED
+            )
+            
+            # Process completed futures
+            for future in done_futures:
+                idx = future_to_idx[future]
+                try:
+                    idx, obs, done, valid, err = future.result()
+                    observations[idx] = obs
+                    dones[idx] = done
+                    valid_flags[idx] = valid
+                    if err:
+                        print(f"[ERROR] trajectory_id={trajectory_ids[idx]}: {err}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to get result for idx={idx}: {e}")
+                    observations[idx] = "<reward>0.0</reward>"
+                    dones[idx] = True
+                    valid_flags[idx] = True
+            
+            # Handle pending futures (timed out)
+            for future in pending_futures:
+                idx = future_to_idx[future]
+                print(f"[TIMEOUT] Future timed out for trajectory_id={trajectory_ids[idx]}")
+                future.cancel()  # Try to cancel
+                observations[idx] = "<reward>0.0</reward>"
+                dones[idx] = True
+                valid_flags[idx] = True
 
-        # print(f"Checkpoint 1, len(trajectory_ids): {len(trajectory_ids)}")
-        # 并发执行delete_env
+        # print(f"Checkpoint 2, Start to delete env")
+        # print(f"observations: {observations}, dones: {dones}, valid_flags: {valid_flags}")
+
+        # Delete environments with timeout
         def _delete_env_if_needed(i):
-            # print(f"deleting env, trajectory_id: {trajectory_ids[i]}, is_last_step: {extra_fields[i].get('is_last_step', False)}, done: {dones[i]}")
             if extra_fields[i].get('is_last_step', False) or dones[i]:
-                self.delete_env(trajectory_ids[i])
-
+                try:
+                    self.delete_env(trajectory_ids[i])
+                except Exception as e:
+                    print(f"Error deleting env for {trajectory_ids[i]}: {e}")
+        
         with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
-            pool.map(_delete_env_if_needed, range(len(trajectory_ids)))
+            # Submit all delete tasks
+            delete_futures = [pool.submit(_delete_env_if_needed, i) for i in range(n)]
+            # Wait with timeout
+            done_deletes, pending_deletes = wait(delete_futures, timeout=max(60, n/2))
+            
+            # Cancel any pending deletes
+            for future in pending_deletes:
+                future.cancel()
+                print("Some environment cleanup tasks timed out")
 
-        # print(f"get_observations finished, observations: {observations}, dones: {dones}, valid_flags: {valid_flags}")
-        # print(f"env_actors: {self.env_actors}")
-
+        # print(f"Checkpoint 3, Start to return observations")
         return observations, dones, valid_flags
+
+    # def get_observations(self, trajectory_ids, actions, extra_fields):
+    #     """
+    #     Batched version of `conduct_action` with thread-pool parallelism.
+    #     (A process-pool is **not** required; Ray already runs the envs
+    #     out-of-process.)
+
+    #     Parameters
+    #     ----------
+    #     trajectory_ids : list[str]
+    #     actions        : list[str | None]
+    #     extra_fields   : list[dict]
+
+    #     Returns
+    #     -------
+    #     observations : list[str]
+    #     dones        : list[bool]
+    #     valid_flags  : list[bool]
+    #     """
+    #     # print(f"get_observations: {trajectory_ids}, {actions}")
+    #     n = len(trajectory_ids)
+    #     observations = [""]   * n
+    #     dones        = [False] * n
+    #     valid_flags  = [True]  * n
+
+    #     # ----------------------------------------------------------------- #
+    #     # Parallel fan-out using a thread pool                              #
+    #     # ----------------------------------------------------------------- #
+
+    #     actions_with_last_step = []
+    #     for i in range(len(trajectory_ids)):
+    #         if extra_fields[i].get('is_last_step', False): # 强行把last step改成calculate reward
+    #             actions_with_last_step.append("<compute_reward>sandbox_r2e</compute_reward>") # If there is last step, directly compute the reward
+    #         else:
+    #             actions_with_last_step.append(actions[i])
+
+    #     def _worker(idx: int):
+    #         tid   = trajectory_ids[idx]
+    #         act   = actions_with_last_step[idx] # Changed from actions if last step
+    #         extra = extra_fields[idx].get("extra_fields", extra_fields[idx])
+    #         try:
+    #             return (*self.conduct_action(tid, act, extra), None)
+    #         except Exception as e:
+    #             raise e
+    #             return ("", False, False, e)   # bubble error to main thread
+        
+    #     print(f"Checkpoint 1, Start to conduct action")
+    #     with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
+    #         futures = [pool.submit(_worker, i) for i in range(n)]
+    #         for i, fut in enumerate(futures):
+    #             obs, done, valid, err = fut.result()
+    #             observations[i] = obs
+    #             dones[i]        = done
+    #             valid_flags[i]  = valid
+    #             if err:
+    #                 print(f"[ERROR] trajectory_id={trajectory_ids[i]}: {err}")
+
+    #     print(f"Checkpoint 2, Start to delete env")
+    #     print(f"observations: {observations}, dones: {dones}, valid_flags: {valid_flags}")
+
+    #     # print(f"Checkpoint 1, len(trajectory_ids): {len(trajectory_ids)}")
+    #     # 并发执行delete_env
+    #     def _delete_env_if_needed(i):
+    #         # print(f"deleting env, trajectory_id: {trajectory_ids[i]}, is_last_step: {extra_fields[i].get('is_last_step', False)}, done: {dones[i]}")
+    #         if extra_fields[i].get('is_last_step', False) or dones[i]:
+    #             self.delete_env(trajectory_ids[i])
+        
+    #     with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
+    #         pool.map(_delete_env_if_needed, range(len(trajectory_ids)))
+
+    #     print(f"Checkpoint 3, Start to return observations")
+
+    #     # print(f"get_observations finished, observations: {observations}, dones: {dones}, valid_flags: {valid_flags}")
+    #     # print(f"env_actors: {self.env_actors}")
+
+    #     return observations, dones, valid_flags
 
     def _cleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
