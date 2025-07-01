@@ -136,7 +136,7 @@ ray job submit --address="http://127.0.0.1:8265" \
     trainer.total_epochs=1
 
 
-pkill -P -9 $server_pid
-kill -9 $kill $server_pid
+# pkill -P -9 $server_pid
+# kill -9 $kill $server_pid
 
 # loss from 1e-5 to 5e-7;

@@ -4,8 +4,9 @@ source .venv-server/bin/activate
 export WANDB_ENTITY=zhihenglyu-cs
 
 set -x
-dataset_name=r2e_swe_debug
-# dataset_name=r2e_swe_extra_debug
+# dataset_name=r2e_swe_debug
+# dataset_name=r2e_swe_extra
+dataset_name=r2e_lite
 train_data=data/$dataset_name/train.parquet
 val_data=data/$dataset_name/train.parquet
 model_save_name=R2EGym-7B-Agent

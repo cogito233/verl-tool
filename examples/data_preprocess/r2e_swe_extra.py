@@ -117,6 +117,8 @@ system_prompt = """You are a programming agent who is provided a github issue an
 
 def build_instances(data, split_name):
     instances = []
+    from r2egym.agenthub.run.constant import valid_instance_ids
+
     for row_i, row in enumerate(data):
         instance = {
             "data_source": "r2e_swe",
@@ -137,6 +139,13 @@ def build_instances(data, split_name):
             }
         }
         # instance["extra_info"]["ds"]["is_extra_sync"] = True
+        ds = instance["extra_info"]["ds"]
+        if ds['instance_id'] not in valid_instance_ids:
+            print(f"instance_id: {ds['instance_id']} is not in valid_instance_ids") 
+            # return None
+            continue
+        ds['docker_image'] = f"txharbor.xaminim.com/minimax/algeng/swebench/sweb.eval.x86_64.{ds['instance_id'].lower().replace('__', '_1776_')}:latest"
+        instance["extra_info"]["ds"] = ds
         # print(instance)
         # exit(1)
         instances.append(instance)
@@ -149,7 +158,7 @@ def build_dataset(dataset_name, dataset_path):
     else:
         dataset = load_dataset(dataset_path)
     print(dataset)
-    train_data = dataset["train"] if "train" in dataset else dataset
+    train_data = dataset["train"]
     # Select first samples for debugging - ensure we don't exceed dataset size
     max_samples = 25600
     actual_size = len(train_data)
@@ -158,22 +167,20 @@ def build_dataset(dataset_name, dataset_path):
     train_data = train_data.select(range(selected_size))
     print(train_data)
 
-    # dev_data = dataset["dev"]
-    # # Select first 160 samples for debugging
-    # dev_data = dev_data.select(range(160))
+    # 随机打乱数据
+    train_data = train_data.shuffle(seed=42)
+    dev_data = train_data.select(range(64))
+    test_data = train_data.select(range(64, 128))
+    new_train_data = train_data.select(range(128, len(train_data)))
 
-    # test_data = dataset["test"]
-    # # Select first 160 samples for debugging
-    # test_data = test_data.select(range(160))
-
-    train_instances = build_instances(train_data, "train")
-    # dev_instances = build_dataset(dev_data, "dev")
-    # test_instances = build_dataset(test_data, "test")
+    train_instances = build_instances(new_train_data, "train")
+    dev_instances = build_instances(dev_data, "dev")
+    test_instances = build_instances(test_data, "test")
 
     from datasets import Dataset
     train_dataset = Dataset.from_list(train_instances)
-    # dev_dataset = Dataset.from_list(dev_instances)
-    # test_dataset = Dataset.from_list(test_instances)
+    dev_dataset = Dataset.from_list(dev_instances)
+    test_dataset = Dataset.from_list(test_instances)
 
     import argparse
     # Create a simple args object for output directory
@@ -184,13 +191,13 @@ def build_dataset(dataset_name, dataset_path):
     
     os.makedirs(args.output_dir, exist_ok=True)
     train_dataset.to_parquet(os.path.join(args.output_dir, "train.parquet"))
-    # dev_dataset.to_parquet(os.path.join(args.output_dir, "dev.parquet"))
-    # test_dataset.to_parquet(os.path.join(args.output_dir, "test.parquet"))
+    dev_dataset.to_parquet(os.path.join(args.output_dir, "dev.parquet"))
+    test_dataset.to_parquet(os.path.join(args.output_dir, "test.parquet"))
 
-    print("Done! Train size:", len(train_dataset))
+    print("Done! Train size:", len(train_dataset), "Dev size:", len(dev_dataset), "Test size:", len(test_dataset))
 
 
 if __name__ == "__main__":
     dataset_name = "r2e_swe_extra"
-    dataset_path = "/minimax-dialogue/ruobai/cogito_local/r2e-gym/data/swe_extra_subsample"
+    dataset_path = "nebius/SWE-bench-extra"
     build_dataset(dataset_name, dataset_path)

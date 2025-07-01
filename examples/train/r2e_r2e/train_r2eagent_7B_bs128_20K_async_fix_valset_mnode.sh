@@ -7,12 +7,12 @@ export VLLM_USE_V1=1
 
 set -x
 # dataset_name=r2e_swe_debug
-dataset_name=r2e_sync_extra
+dataset_name=r2e_lite
 # dataset_name=r2e_swe_extra_debug
-train_data=data/$dataset_name/train.parquet
-val_data=data/$dataset_name/train.parquet
-model_name=R2EGym-32B-Agent
-model_path=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-32B-Agent
+train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
+val_data=/root/code/rl_r2e/data/$dataset_name/dev.parquet
+model_name=R2EGym-7B-Agent
+model_path=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=8
 n_nodes=1
@@ -20,19 +20,14 @@ enable_agent=True # enable agent for tool use
 
 # n=8
 # batch_size=32
-# 可能挂了
-
-# n=8
-# batch_size=16
-
 n=8
-batch_size=16   
+batch_size=16
 
-ppo_mini_batch_size=8
+ppo_mini_batch_size=4
 max_prompt_length=2048
 max_response_length=20480 
-max_obs_length=8192
-temperature=0.5
+max_obs_length=4096
+temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
 token of
@@ -40,7 +35,7 @@ token of
 
 # === begin, added by Zhiheng ===
 rollout_mode='async'
-max_action_length=2048
+max_action_length=1536
 rolling_with_prompt=False
 call_tool_first=True
 truncate_obs_side=left # This is weird but required in the current code
@@ -59,11 +54,12 @@ critic_lr=5e-7
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-baseline-0623-ST-aync"
+run_name="${model_pretty_name}-${dataset_name}-0630-r2e-lite"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-host=localhost
+# host=localhost
+host=$(hostname -I | awk '{print $1}')
 # # port=$(shuf -i 30000-31000 -n 1)
 port=30815
 tool_server_url=http://$host:$port/get_observation
@@ -76,7 +72,11 @@ tool_server_url=http://$host:$port/get_observation
 
 # export VLLM_USE_V1=1
 # actor_rollout_ref.agent.max_turns is for debug only
-PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
+# PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
+ray job submit --address="http://127.0.0.1:8265" \
+    --runtime-env=verl_tool/trainer/runtime_env.yaml \
+    -- \
+    PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     algorithm.adv_estimator=$rl_alg \
     data.train_files=$train_data \
     data.val_files=$val_data \
@@ -103,19 +103,19 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     +actor_rollout_ref.agent.min_action_num=$min_action_num \
     +actor_rollout_ref.agent.truncate_response_side=$truncate_response_side \
     +actor_rollout_ref.agent.truncate_obs_side=$truncate_obs_side \
-    +actor_rollout_ref.agent.max_turns=40 \
+    +actor_rollout_ref.agent.max_turns=30 \
     +actor_rollout_ref.agent.num_gpus=$n_gpus_per_node \
     +actor_rollout_ref.agent.valid_actions=$valid_actions \
     +actor_rollout_ref.agent.no_action_as_stop=False \
     +actor_rollout_ref.actor.enable_agent=$enable_agent \
+    actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.temperature=$temperature \
     actor_rollout_ref.rollout.top_k=-1 \
     actor_rollout_ref.rollout.n=$n \
     actor_rollout_ref.rollout.top_p=1.0 \
-    actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     critic.optim.lr=$critic_lr \
@@ -132,11 +132,11 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
     trainer.save_freq=10 \
-    trainer.test_freq=10 \
+    trainer.test_freq=5 \
     trainer.total_epochs=1
 
 
-pkill -P -9 $server_pid
-kill -9 $kill $server_pid
+# pkill -P -9 $server_pid
+# kill -9 $kill $server_pid
 
 # loss from 1e-5 to 5e-7;
