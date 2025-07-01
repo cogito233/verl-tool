@@ -121,14 +121,13 @@ class R2ESWERewardManager:
                 tokens = input_ids[i]
                 tokens = tokens[tokens != self.tokenizer.pad_token_id]
                 
-                # 解码为raw text
-                # raw_text = self.tokenizer.decode(tokens, skip_special_tokens=False)
-                data_item = data[i]
-                last_obs_raw_text = data_item.non_tensor_batch["last_obs"]
-                
                 # 使用正则表达式查找<reward>reward_str</reward>
                 reward_pattern = r'<reward>(.*?)</reward>'
+
+                # raw_text = self.tokenizer.decode(tokens, skip_special_tokens=False)
                 # reward_match = re.search(reward_pattern, raw_text, re.DOTALL)
+
+                data_item = data[i]
                 last_obs_raw_text = data_item.non_tensor_batch["last_obs"]
                 reward_match = re.search(reward_pattern, last_obs_raw_text, re.DOTALL)
                 print(f"last_obs_raw_text of {i}: {last_obs_raw_text}")
@@ -247,7 +246,8 @@ if __name__ == '__main__':
     import pickle
 
     # Load the saved data object from disk
-    with open("verl_step_records/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-2025-06-25-05-35-58/step-1.pkl", "rb") as f:
+    # with open("verl_step_records/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-async-2025-06-25-13-30-28/step-8.pkl", "rb") as f:
+    with open("verl_step_records/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-sync-2025-06-25-14-05-34/step-1.pkl", "rb") as f:
         dummy_data = pickle.load(f)
     # print(dummy_data)
 

@@ -68,7 +68,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
             sock_connect=5,
             sock_read=60,
         )
-        max_retries = 3
+        max_retries = 5
         backoff_base = 2
 
         # 解构额外字段
@@ -102,6 +102,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                             )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 # Save some logs to attempt_logs/http_error_vllm_server.jsonl
+                import os
                 if not os.path.exists('attempt_logs'):
                     os.makedirs('attempt_logs')
                 log_line = {    

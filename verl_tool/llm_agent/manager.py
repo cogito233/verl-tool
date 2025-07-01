@@ -1006,6 +1006,7 @@ class AgentActorManager:
         """
         safe_payload = sanitize_request(batch_data)
         response = requests.post(self.config.tool_server_url, json=safe_payload)
+        # exit(1)
         if response.status_code != 200:
             # print("#" * 100)
             # # print(safe_payload)
@@ -1054,9 +1055,9 @@ class AgentActorManager:
 
     async def _aiohttp_request(self, data):
         timeout = aiohttp.ClientTimeout(
-            total=900,
-            connect=10,
-            sock_connect=10,
+            total=600,
+            connect=600,
+            sock_connect=600,
             sock_read=600,
         )
         max_retries = 3
