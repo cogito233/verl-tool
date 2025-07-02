@@ -43,32 +43,14 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         client = AsyncOpenAI(base_url=f"http://{address}/v1", api_key="token-abc123", timeout=None, max_retries=0)
         return await client.completions.create(**complete_request)
 
-    # async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
-    #     try:
-    #         extra_body = complete_request.pop("extra_body", {})
-    #         complete_request.update(extra_body or {})
-    #         extra_headers = complete_request.pop("extra_headers")
-    #         timeout = aiohttp.ClientTimeout(total=None)
-    #         session = aiohttp.ClientSession(timeout=timeout)
-    #         async with session.post(
-    #             url=f"http://{address}/v1/completions",
-    #             headers={"Authorization": "Bearer token-abc123", **extra_headers},
-    #             json=complete_request,
-    #         ) as resp:
-    #             data = await resp.json()
-    #             return Completion(**data)
-    #     finally:
-    #         await session.close()
-    
-
     async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
         timeout = aiohttp.ClientTimeout(
-            total=180,
-            connect=30,
-            sock_connect=5,
-            sock_read=60,
+            total=900,
+            connect=900,
+            sock_connect=900,
+            sock_read=900,
         )
-        max_retries = 5
+        max_retries = 2
         backoff_base = 2
 
         # 解构额外字段
@@ -93,6 +75,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                             return Completion(**data)
                         else:
                             logger.warning(f"[Attempt {attempt}] Non-200 status {resp.status}: {data}")
+                            print(f"[Attempt {attempt}] Non-200 status {resp.status}: {data}")
                             raise aiohttp.ClientResponseError(
                                 request_info=resp.request_info,
                                 history=resp.history,

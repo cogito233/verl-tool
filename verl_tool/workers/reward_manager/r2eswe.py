@@ -50,22 +50,6 @@ class R2ESWERewardManager:
         self.reward_fn_key = reward_fn_key  # 新增，兼容主流程
         self.step = None
 
-    # def reward_single(self, output, ds): # Aborted
-    #     test_spec = make_test_spec(ds)
-    #     out, _ = self.runtime.run_tests()
-    #     eval_status_map, found = self.runtime.get_logs_eval(test_spec, out)
-    #     eval_ref = {
-    #         KEY_INSTANCE_ID: self.test_spec.instance_id,
-    #         FAIL_TO_PASS: self.test_spec.FAIL_TO_PASS,
-    #         PASS_TO_PASS: self.test_spec.PASS_TO_PASS,
-    #     }
-    #     report = get_eval_tests_report(
-    #         eval_status_map, eval_ref, eval_type=get_eval_type(self.test_spec)
-    #     )
-    #     success = get_resolution_status(report) == ResolvedStatus.FULL.value
-    #     return int(success), report
-
-
     def __call__(self, data: DataProto, return_dict=False):
         # 初始化record_dir（参考torl实现）
         save_record = data.meta_info.get('save_record', True)
@@ -252,7 +236,7 @@ if __name__ == '__main__':
     import pickle
 
     # Load the saved data object from disk
-    with open("verl_step_records_before_0701/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-async-2025-06-25-13-30-28/step-8.pkl", "rb") as f:
+    with open("verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-16-29-40/step-31.pkl", "rb") as f:
     # with open("verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-08-18-43/step-5.pkl", "rb") as f:
         dummy_data = pickle.load(f)
     print(dummy_data.batch.keys())
