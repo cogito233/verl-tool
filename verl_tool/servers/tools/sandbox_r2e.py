@@ -123,7 +123,7 @@ class R2EEnvActor:
             
             # Execute action (same pattern as agent.py)
             with suppress_stdout_stderr():
-                obs, reward, done, info = self.env.step(action, timeout=180)
+                obs, reward, done, info = self.env.step(action, timeout=360)
 
             # if done, then pad the reward into the observation
             if done:
@@ -401,14 +401,14 @@ class SandboxR2ETool(BaseTool):
 
         # 3) Wait for the Ray RPC to finish with 300s timeout
         try:
-            result = ray.get(fut, timeout=300)  # 300秒超时
+            result = ray.get(fut, timeout=600)  # 300秒超时
             if isinstance(result, tuple):           # step_env
                 obs, done, valid = result
             else:                                   # start_env
                 obs, done, valid = result, False, True
         except ray.exceptions.GetTimeoutError:
             # 超时处理 - 返回指定的值
-            print(f"Action timeout after 300 seconds for trajectory_id: {trajectory_id}, action: {action}")
+            print(f"Action timeout after 600 seconds for trajectory_id: {trajectory_id}, action: {action}")
             return "<reward>0.0</reward>", True, True
         except Exception as e:
             # 其他异常处理
@@ -463,7 +463,7 @@ class SandboxR2ETool(BaseTool):
             # 给一个合理的总超时时间（比单个超时稍长）
             done_futures, pending_futures = wait(
                 future_to_idx.keys(), 
-                timeout=max(340, n * 2.5),  # 比单个超时(120s)稍长一点
+                timeout=max(680, n * 5),  # 比单个超时(120s)稍长一点
                 return_when=ALL_COMPLETED
             )
             

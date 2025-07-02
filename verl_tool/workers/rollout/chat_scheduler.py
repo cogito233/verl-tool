@@ -64,7 +64,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
     async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
         timeout = aiohttp.ClientTimeout(
             total=180,
-            connect=10,
+            connect=30,
             sock_connect=5,
             sock_read=60,
         )
@@ -103,6 +103,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 # Save some logs to attempt_logs/http_error_vllm_server.jsonl
                 import os
+                import json
                 if not os.path.exists('attempt_logs'):
                     os.makedirs('attempt_logs')
                 log_line = {    
@@ -116,7 +117,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                 logger.warning(f"[Attempt {attempt}] Exception: {repr(e)}")
                 if attempt == max_retries:
                     logger.error(f"All {max_retries} attempts failed for address {address}")
-                    raise
+                    raise e
                 await asyncio.sleep(backoff_base ** attempt)  # 指数退避
 
     async def _submit_completions(

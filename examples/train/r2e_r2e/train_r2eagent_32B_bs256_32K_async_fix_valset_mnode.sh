@@ -129,9 +129,10 @@ ray job submit --address="http://127.0.0.1:8265" \
     trainer.experiment_name=$run_name \
     trainer.val_before_train=False \
     trainer.default_hdfs_dir=null \
+    trainer.default_local_dir=$(pwd)/checkpoints/r2eswe/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
-    trainer.save_freq=10 \
+    trainer.save_freq=5 \
     trainer.test_freq=5 \
     trainer.total_epochs=1
 

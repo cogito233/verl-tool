@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-log_server=job_logs/bash_7B_reexp_server.log
-log_train=job_logs/bash_7B_reexp_train.log
+log_server=job_logs/bash_7B_reexp_server_large_lr.log
+log_train=job_logs/bash_7B_reexp_train_large_lr.log
 job_server=examples/train/r2e_swe/r2e_server_mnode.sh
-job_train=examples/train/r2e_swe/train_r2eagent_7B_bs128_20K_async_mnode_reexp.sh
+job_train=examples/train/r2e_r2e/train_r2eagent_7B_bs128_20K_async_fix_valset_mnode_large_lr.sh
 
 
 # 📝 若要下载 punkt_tab 就把下面三行取消注释

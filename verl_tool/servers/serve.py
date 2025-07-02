@@ -162,7 +162,7 @@ class AsyncToolManager:
                         "observation": observations[i],
                         "done": dones[i],
                         "valid": valids[i],
-                        "extra_fields": extra_fields[i],
+                        # "extra_fields": extra_fields[i],
                         "tool_type": tool_types[i],
                         "timestamp": datetime.now().isoformat()
                     }

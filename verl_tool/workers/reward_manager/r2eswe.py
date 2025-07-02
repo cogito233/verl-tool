@@ -69,14 +69,20 @@ class R2ESWERewardManager:
     def __call__(self, data: DataProto, return_dict=False):
         # 初始化record_dir（参考torl实现）
         save_record = data.meta_info.get('save_record', True)
+        # print(f"####### State of save_record: {save_record}")
+        # print(f"####### Path of __file__: {Path(__file__)}")
+        # print(f"####### Path of __file__.parent.parent.parent.parent: {Path(__file__).parent.parent.parent.parent}")
+        curr_dir = "/minimax-dialogue/users/ruobai/rl_r2e" # Hardcode for now
+        curr_dir = Path(curr_dir)
 
         if not hasattr(self, 'record_dir'):
             if hasattr(self, 'run_id'):
-                self.record_dir = Path(__file__).parent.parent.parent.parent / "verl_step_records" / f"{self.run_id}-{time.strftime('%Y-%m-%d-%H-%M-%S')}"
+                self.record_dir = curr_dir / "verl_step_records" / f"{self.run_id}-{time.strftime('%Y-%m-%d-%H-%M-%S')}"
                 self.record_dir.mkdir(parents=True, exist_ok=True)
             else:
-                self.record_dir = Path(__file__).parent.parent.parent.parent / "verl_step_records" / f"r2eswe-{time.strftime('%Y-%m-%d-%H-%M-%S')}"
+                self.record_dir = curr_dir / "verl_step_records" / f"r2eswe-{time.strftime('%Y-%m-%d-%H-%M-%S')}"
                 self.record_dir.mkdir(parents=True, exist_ok=True)
+        print(f"####### Save to record dir: {self.record_dir}")
         
         # 检查last step index（参考torl实现）
         if self.step is None:
@@ -193,7 +199,7 @@ class R2ESWERewardManager:
                 reward_extra_info['action_round'].append(0)
         
         print( f"Extracted rewards: {rewards}")
-        print(f"Extracted reports: {reports}")
+        # print(f"Extracted reports: {reports}")
         # responses_id = data.batch["responses"]
         # reward_tensor = torch.torch.zeros_like(responses_id, dtype=torch.float32)   
         # print(f"Reward tensor shape: {reward_tensor.shape}")
@@ -216,7 +222,7 @@ class R2ESWERewardManager:
 
         # print(f"Extracted rewards: {rewards}")
         print(f"Reward tensor shape: {reward_tensor.shape}")
-        print(f"Statistics: avg_obs_len={reward_extra_info['average_obs_length']}, max_obs_len={reward_extra_info['max_obs_length']}, avg_action_len={reward_extra_info['average_action_length']}, max_action_len={reward_extra_info['max_action_length']}, action_rounds={reward_extra_info['action_round']}")
+        # print(f"Statistics: avg_obs_len={reward_extra_info['average_obs_length']}, max_obs_len={reward_extra_info['max_obs_length']}, avg_action_len={reward_extra_info['average_action_length']}, max_action_len={reward_extra_info['max_action_length']}, action_rounds={reward_extra_info['action_round']}")
 
         # 保存完整的data为pkl文件
         # if save_record:
@@ -246,9 +252,12 @@ if __name__ == '__main__':
     import pickle
 
     # Load the saved data object from disk
-    # with open("verl_step_records/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-async-2025-06-25-13-30-28/step-8.pkl", "rb") as f:
-    with open("verl_step_records/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-sync-2025-06-25-14-05-34/step-1.pkl", "rb") as f:
+    with open("verl_step_records_before_0701/r2egym-7b-agent-r2e_sync_extra-baseline-0623-bs32-async-2025-06-25-13-30-28/step-8.pkl", "rb") as f:
+    # with open("verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-08-18-43/step-5.pkl", "rb") as f:
         dummy_data = pickle.load(f)
+    print(dummy_data.batch.keys())
+    print(dummy_data.non_tensor_batch.keys())
+    print(dummy_data.meta_info.keys())
     # print(dummy_data)
 
     # Instantiate the WikiRLRewardManager (you can pass in config if needed)

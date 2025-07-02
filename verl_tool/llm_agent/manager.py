@@ -1055,12 +1055,12 @@ class AgentActorManager:
 
     async def _aiohttp_request(self, data):
         timeout = aiohttp.ClientTimeout(
-            total=600,
-            connect=600,
-            sock_connect=600,
-            sock_read=600,
+            total=1200,
+            connect=1200,
+            sock_connect=1200,
+            sock_read=1200,
         )
-        max_retries = 3
+        max_retries = 2
         backoff_base = 2  # 指数退避基础时间
 
         for attempt in range(1, max_retries + 1):

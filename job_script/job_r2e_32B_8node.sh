@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-log_server=job_logs/bash_rolloutoom_server.log
-log_train=job_logs/bash_rolloutoom_train.log
-job_server=examples/train/r2e_swe/r2e_server.sh
-job_train=examples/train/r2e_swe_debug/rollout_oom_test.sh
+log_server=job_logs/bash_32B_8node_server.log
+log_train=job_logs/bash_32B_8node_train.log
+job_server=examples/train/r2e_swe/r2e_server_mnode.sh
+job_train=examples/train/r2e_r2e/train_r2eagent_32B_bs256_32K_8node_swe_val.sh
+
 
 # 📝 若要下载 punkt_tab 就把下面三行取消注释
 # .venv/bin/python - <<'PY'
@@ -12,6 +13,10 @@ job_train=examples/train/r2e_swe_debug/rollout_oom_test.sh
 # PY
 
 cd /root/code/rl_r2e
+
+ray status
+sleep 120
+ray status
 
 # --------- 工具函数 ----------
 # 前台跑 + 日志
