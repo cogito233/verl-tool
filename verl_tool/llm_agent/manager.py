@@ -499,6 +499,9 @@ class AgentActorManager:
         perf_timer = PerformanceTimer(do_timer=False)
         perf_timer.start('run_llm_loop_total')
         perf_timer.start('initialization')
+        # print("--------------------------------")
+        # print(gen_batch)
+        # print("--------------------------------")
         
         ori_meta_info = gen_batch.meta_info
         if 'eos_token_id' not in ori_meta_info:
@@ -508,6 +511,12 @@ class AgentActorManager:
         else:
             stop_token_ids = [ori_meta_info['eos_token_id']] + self.additional_eos_token_ids
         gen_batch = self.repeat_inputs_by_n(gen_batch)
+
+        # print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+        # print(gen_batch)
+        # print(gen_batch.batch['input_ids'])
+        # print(self.config.max_start_length)
+        # print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 
         initial_input_ids = gen_batch.batch['input_ids'][:, -self.config.max_start_length:].clone()
 
@@ -733,7 +742,7 @@ class AgentActorManager:
             'active_mask': active_mask.tolist(),
             'action_lengths': turns_stats_extra["action_lengths"],
             'obs_lengths': turns_stats_extra["obs_lengths"],
-            'last_obs': turns_stats_extra["last_obs"]
+            'last_obs': turns_stats_extra["last_obs"],
             'turn_rewards': turns_stats_extra["rewards"],
             'tool_interact_info': turns_stats_extra["tool_interact_info"],
         }

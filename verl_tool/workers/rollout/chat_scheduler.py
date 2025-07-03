@@ -264,6 +264,83 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
         return output_batch
 
+    # async def generate_sequences(self, batch: DataProto, **kwargs) -> DataProto:
+    #     logger.info("[VerlToolChatCompletionScheduler] generate_sequences start")
+    #     t_start = time.time()
+    #     kwargs.update({
+    #         "model": self.model_name,
+    #         "temperature": self.config.temperature,
+    #         "top_p": self.config.top_p,
+    #     })
+
+    #     # override sampling params for validation
+    #     if batch.meta_info.get("validate", False):
+    #         kwargs["top_p"] = self.config.val_kwargs.top_p
+    #         kwargs["temperature"] = self.config.val_kwargs.temperature
+    #     repeated_batch = self.agent_actor_manager.repeat_inputs_by_n(batch)
+    #     repeated_chunk_batch = repeated_batch.chunk(len(repeated_batch))
+    #     # repeated_batch = [repeated_batch] # for debug
+        
+    #     logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_batch)}")
+    #     # tasks = []
+    #     # for batch_index in range(len(repeated_batch)):
+    #     #     tasks.append(
+    #     #         asyncio.create_task(
+    #     #             self.agent_actor_manager.run_llm_loop_async(
+    #     #                 repeated_batch[batch_index],
+    #     #                 **kwargs
+    #     #             )
+    #     #         )
+    #     #     )
+    #     # # gen_outputs = await asyncio.gather(*tasks)
+    #     # gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
+
+    #     # Begin of Producer–Consumer pattern by Zhiheng------------------------------------
+    #     if self.max_concurrent_trajectories is not None and self.max_concurrent_trajectories > 0:
+    #         MAX_CONCURRENCY = self.max_concurrent_trajectories
+    #     else:
+    #         MAX_CONCURRENCY = getattr(self.config, "max_parallel", 256)          # number of workers
+    #     START_INTERVAL = getattr(self.config, "launch_interval_sec", 0.5)    # seconds between task launches
+
+    #     queue: asyncio.Queue = asyncio.Queue()
+    #     sem = asyncio.Semaphore(MAX_CONCURRENCY)     # guard inner fan-out if any
+    #     results = []                                  # collected outputs
+
+    #     async def producer() -> None:
+    #         """Feed chunks into the queue at a fixed rate."""
+    #         for chunk in repeated_batch:
+    #             await queue.put(chunk)
+    #             await asyncio.sleep(START_INTERVAL)
+    #         # poison pills to gracefully stop workers
+    #         for _ in range(MAX_CONCURRENCY):
+    #             await queue.put(None)
+
+    #     async def worker() -> None:
+    #         """Consume chunks and run LLM loop with concurrency guard."""
+    #         while True:
+    #             chunk = await queue.get()
+    #             if chunk is None:
+    #                 break
+    #             async with sem:
+    #                 res = await self.agent_actor_manager.run_llm_loop_async(chunk, **kwargs)
+    #                 results.append(res)
+
+    #     # launch producer + N workers
+    #     await asyncio.gather(
+    #         producer(),
+    #         *[asyncio.create_task(worker()) for _ in range(MAX_CONCURRENCY)]
+    #     )
+
+    #     gen_outputs = results
+
+    #     output_batch = DataProto.concat(gen_outputs)
+    #     # End of Producer–Consumer pattern by Zhiheng------------------------------------
+
+    #     output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
+    #     logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences for {len(repeated_batch)} number of trajectories done, took", output_batch.meta_info["timing"]["generate_sequences"], "seconds")
+    #     return output_batch
+
+
     async def generate_sequences(self, batch: DataProto, **kwargs) -> DataProto:
         logger.info("[VerlToolChatCompletionScheduler] generate_sequences start")
         t_start = time.time()
@@ -280,62 +357,41 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         repeated_batch = self.agent_actor_manager.repeat_inputs_by_n(batch)
         repeated_chunk_batch = repeated_batch.chunk(len(repeated_batch))
         # repeated_batch = [repeated_batch] # for debug
-        
-        logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_batch)}")
-        # tasks = []
-        # for batch_index in range(len(repeated_batch)):
-        #     tasks.append(
-        #         asyncio.create_task(
-        #             self.agent_actor_manager.run_llm_loop_async(
-        #                 repeated_batch[batch_index],
-        #                 **kwargs
-        #             )
-        #         )
-        #     )
-        # # gen_outputs = await asyncio.gather(*tasks)
-        # gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
-
-        # Begin of Producer–Consumer pattern by Zhiheng------------------------------------
-        if self.max_concurrent_trajectories is not None and self.max_concurrent_trajectories > 0:
-            MAX_CONCURRENCY = self.max_concurrent_trajectories
+        logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_chunk_batch)}")
+        tasks = []
+        if self.agent_config.enable_agent:
+            if self.max_concurrent_trajectories is not None and self.max_concurrent_trajectories > 0:
+                semaphore = asyncio.Semaphore(self.max_concurrent_trajectories)
+                async def run_with_semaphore(batch_index):
+                    async with semaphore:
+                        return await self.agent_actor_manager.run_llm_loop_async(
+                            repeated_chunk_batch[batch_index],
+                            **kwargs
+                        )
+                for batch_index in range(len(repeated_chunk_batch)):
+                    tasks.append(
+                        asyncio.create_task(
+                            run_with_semaphore(batch_index)
+                        )
+                    )
+            for batch_index in range(len(repeated_chunk_batch)):
+                tasks.append(
+                    asyncio.create_task(
+                        self.agent_actor_manager.run_llm_loop_async(
+                            repeated_chunk_batch[batch_index],
+                            **kwargs
+                        )
+                    )
+                )
+            # gen_outputs = await asyncio.gather(*tasks)
+            gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
+            output_batch = DataProto.concat(gen_outputs)
         else:
-            MAX_CONCURRENCY = getattr(self.config, "max_parallel", 256)          # number of workers
-        START_INTERVAL = getattr(self.config, "launch_interval_sec", 0.5)    # seconds between task launches
-
-        queue: asyncio.Queue = asyncio.Queue()
-        sem = asyncio.Semaphore(MAX_CONCURRENCY)     # guard inner fan-out if any
-        results = []                                  # collected outputs
-
-        async def producer() -> None:
-            """Feed chunks into the queue at a fixed rate."""
-            for chunk in repeated_batch:
-                await queue.put(chunk)
-                await asyncio.sleep(START_INTERVAL)
-            # poison pills to gracefully stop workers
-            for _ in range(MAX_CONCURRENCY):
-                await queue.put(None)
-
-        async def worker() -> None:
-            """Consume chunks and run LLM loop with concurrency guard."""
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                async with sem:
-                    res = await self.agent_actor_manager.run_llm_loop_async(chunk, **kwargs)
-                    results.append(res)
-
-        # launch producer + N workers
-        await asyncio.gather(
-            producer(),
-            *[asyncio.create_task(worker()) for _ in range(MAX_CONCURRENCY)]
-        )
-
-        gen_outputs = results
-
-        output_batch = DataProto.concat(gen_outputs)
-        # End of Producer–Consumer pattern by Zhiheng------------------------------------
-
+            kwargs["max_tokens"] = self.max_response_length
+            output_batch = await self.simple_generate_sequences(
+                repeated_batch,
+                **kwargs
+            )
         output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
         logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences for {len(repeated_batch)} number of trajectories done, took", output_batch.meta_info["timing"]["generate_sequences"], "seconds")
         return output_batch
