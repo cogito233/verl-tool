@@ -1,3 +1,8 @@
+source .venv-server/bin/activate
+
+ray stop
+ray start --head --dashboard-host=0.0.0.0
+
 host=0.0.0.0
 # port=$(shuf -i 30000-31000 -n 1)
 port=30815

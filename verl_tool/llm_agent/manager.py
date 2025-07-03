@@ -133,6 +133,18 @@ class AgentActorManager:
         else:
             n = self.config.n
             inputs = inputs.repeat(n, interleave=True)
+        # 新增：extra_info 也重复 n 倍
+        if 'extra_info' in inputs.non_tensor_batch and inputs.non_tensor_batch['extra_info'] is not None:
+            ori_extra = inputs.non_tensor_batch['extra_info']
+            new_extra = []
+            for i in range(ori_len):
+                for j in range(n):
+                    new_extra.append(ori_extra[i])
+            # 保持类型一致
+            if isinstance(ori_extra, np.ndarray):
+                inputs.non_tensor_batch['extra_info'] = np.array(new_extra, dtype=object)
+            else:
+                inputs.non_tensor_batch['extra_info'] = new_extra
         # add "_{i}" for each trajectory to the traj_ids
         for i in range(ori_len):
             for j in range(n):
@@ -182,6 +194,8 @@ class AgentActorManager:
                             if turn_end_token_idx == -1:
                                 responses_str[i] += self.config.turn_end_token
                         do_action = True
+                    if not responses_str[i].endswith(self.config.turn_end_token):
+                        print(f"responses_str {i}: {responses_str[i]}")
                     do_actions.append(do_action)
             else:
                 if isinstance(responses, torch.Tensor):
@@ -226,7 +240,8 @@ class AgentActorManager:
         """Process next observations from environment."""
         async with self.tokenizer_lock:
             mtrl_sep = self.config.mtrl_sep
-            next_obs = [obs if not done else "" for obs, done in zip(next_obs, dones)]
+            # next_obs = [obs if not done else "" for obs, done in zip(next_obs, dones)]
+            next_obs = [obs if not done else obs for obs, done in zip(next_obs, dones)] # Zhiheng: keep the last observation, for evaluation
             if self.config.truncate_obs_side == 'left':
                 next_obs_ids = self.tokenizer(
                     next_obs,
@@ -258,10 +273,15 @@ class AgentActorManager:
                 )
                 processed_next_obs = []
                 for i in range(len(next_obs)):
-                    if finishs[i] or dones[i]:
+                    if finishs[i]: # Zhiheng: If not work, I should change the logic here
                         # do action is false
                         assert next_obs[i] == "", f"next_obs should be empty when finishs is True, but got {next_obs[i]}"
                         processed_next_obs.append("")
+                    elif dones[i]: # if the episode is done, we keep the last observation
+                        if self.config.keep_last_obs:
+                            processed_next_obs.append(mtrl_sep.format(obs=next_obs[i]))
+                        else:
+                            processed_next_obs.append("")
                     elif valid_action[i]:
                         processed_next_obs.append(mtrl_sep.format(obs=next_obs[i]))
                     else:
@@ -443,11 +463,45 @@ class AgentActorManager:
         active_mask &= new_conditions
         return active_mask.sum().item()  # Return count for logging
 
+    # async def _handle_overlong_finish(
+    #     self,
+    #     overlong_dones: torch.Tensor,
+    #     active_mask: torch.Tensor,
+    #     traj_ids: List[str],
+    #     turns_stats_extra: Dict,
+    #     extra_info=None,
+    # ):
+
+    #     active_mask = active_mask * overlong_dones.to(active_mask.dtype).to(active_mask.device)
+    #     if active_mask.sum() == 0:
+    #         return
+    #     responses_str_all = [""] * len(traj_ids)
+    #     active_traj_ids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
+    #     active_responses_str = ["" for i in range(len(responses_str_all)) if active_mask[i]]
+    #     do_actions = [True] * len(active_traj_ids)
+    #     active_extra_info = [extra_info[i] for i in range(len(extra_info)) if active_mask[i]]
+
+    #     _obs, _dones, _valids, _finishs = await self.interact_with_tool_server(
+    #         active_traj_ids,
+    #         active_responses_str,
+    #         do_actions,
+    #         active_mask,
+    #         extra_fields=active_extra_info,
+    #         is_last_step=True,
+    #     )
+    #     for i in range(len(active_mask)):
+    #         if active_mask[i]:
+    #             turns_stats_extra["last_obs"][i] = "[Overlong] " + _obs[i]
+
+
     async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
         perf_timer = PerformanceTimer(do_timer=False)
         perf_timer.start('run_llm_loop_total')
         perf_timer.start('initialization')
+        # print("--------------------------------")
+        # print(gen_batch)
+        # print("--------------------------------")
         
         ori_meta_info = gen_batch.meta_info
         if 'eos_token_id' not in ori_meta_info:
@@ -457,6 +511,12 @@ class AgentActorManager:
         else:
             stop_token_ids = [ori_meta_info['eos_token_id']] + self.additional_eos_token_ids
         gen_batch = self.repeat_inputs_by_n(gen_batch)
+
+        # print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+        # print(gen_batch)
+        # print(gen_batch.batch['input_ids'])
+        # print(self.config.max_start_length)
+        # print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 
         initial_input_ids = gen_batch.batch['input_ids'][:, -self.config.max_start_length:].clone()
 
@@ -473,6 +533,7 @@ class AgentActorManager:
 
         turns_stats_extra_keys = ['action_lengths', 'obs_lengths', 'rewards', 'tool_interact_info']
         turns_stats_extra = {}
+        turns_stats_extra['last_obs'] = ["" for _ in range(gen_batch.batch['input_ids'].shape[0])]
         for key in turns_stats_extra_keys:
             turns_stats_extra[key] = np.empty((gen_batch.batch['input_ids'].shape[0],), dtype=object)  # rewards can be None, so we use object type
             for i in range(gen_batch.batch['input_ids'].shape[0]):
@@ -504,10 +565,14 @@ class AgentActorManager:
                 active_uids, responses_str, do_actions, active_mask,
                 extra_fields=rollings.non_tensor_batch.get('extra_info', None)
             )
+
             for i, reward in enumerate(rewards):
                 if rewards[i] is not None and active_mask[i]:
                     turns_stats_extra["rewards"][i].append(reward)
+                if active_mask[i]:
+                    turns_stats_extra["last_obs"][i] = f"[Step 0] " + next_obs[i]
                 turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
+            
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_num_list.append(self._update_active_mask_inplace(active_mask, curr_active_mask))
             # turns_stats[curr_active_mask] += 1
@@ -605,6 +670,30 @@ class AgentActorManager:
                     turns_stats_extra["rewards"][i].append(reward)
                 turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
             perf_timer.end(f'step_{step}_tool_interaction')
+            # obs_idx = 0
+            # if step > 1:
+            #     print("--------------------------------")
+            #     print(f"len(active_uids): {len(active_uids)}, len(responses_str): {len(responses_str)}, len(do_actions): {len(do_actions)}, len(active_mask): {len(active_mask)}")
+            #     print(f"len(next_obs): {len(next_obs)}, len(dones): {len(dones)}, len(valid_action): {len(valid_action)}, len(finishs): {len(finishs)}")
+            #     # print("================================")
+            #     # print(f"active_mask: {active_mask}")
+            #     # print(f"next_obs: {next_obs}")
+            #     # print(f"dones: {dones}")
+            #     # print(f"valid_action: {valid_action}")
+            #     # print(f"finishs: {finishs}")
+            #     # print(f"responses_str: {responses_str}")
+            #     # print(f"do_actions: {do_actions}")
+            #     # print(turns_stats_extra["last_obs"])
+            #     print("--------------------------------")
+            for i, active in enumerate(active_mask):
+                if active:
+                    # if step == 30:
+                    #     print(f"i: {i}, active: {active}, obs_idx: {obs_idx}, next_obs: {next_obs[obs_idx]}")
+                    turns_stats_extra["last_obs"][i] = f"[Step {step}] " + next_obs[i]
+                    # obs_idx += 1
+            # if step == 30:
+            #     print(turns_stats_extra["last_obs"])
+            #     print("--------------------------------"*20)
 
             perf_timer.start(f'step_{step}_state_updates')
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
@@ -641,7 +730,6 @@ class AgentActorManager:
             agent_sampling_params['max_tokens'] = available_context_budget # for vllm
             agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
             perf_timer.end(f'step_{step}_state_updates')
-            
             perf_timer.end(step_timer_key)
 
         perf_timer.end('main_generation_loop')
@@ -654,6 +742,7 @@ class AgentActorManager:
             'active_mask': active_mask.tolist(),
             'action_lengths': turns_stats_extra["action_lengths"],
             'obs_lengths': turns_stats_extra["obs_lengths"],
+            'last_obs': turns_stats_extra["last_obs"],
             'turn_rewards': turns_stats_extra["rewards"],
             'tool_interact_info': turns_stats_extra["tool_interact_info"],
         }
@@ -778,8 +867,19 @@ class AgentActorManager:
         """
         safe_payload = sanitize_request(batch_data)
         response = requests.post(self.config.tool_server_url, json=safe_payload)
+        # exit(1)
         if response.status_code != 200:
-            os.mkdir('tmp', exist_ok=True)  # Ensure tmp directory exists
+            # print("#" * 100)
+            # # print(safe_payload)
+            # print("URL:", self.config.tool_server_url)
+            # print("Length of trajectory ids:", len(safe_payload['trajectory_ids']))
+            # print("Length of actions:", len(safe_payload['actions']))
+            # print("Length of finish:", len(safe_payload['finish']))
+            # print("Length of extra fields:", len(safe_payload.get('extra_fields', [])))
+            # print("$" * 100)
+            # print(response)
+            # print("#" * 100)
+            os.makedirs('tmp', exist_ok=True)  # Ensure tmp directory exists
             with open("tmp/error_data.json", 'w') as f:
                 json.dump(batch_data, f, indent=4)
             try:
@@ -801,18 +901,70 @@ class AgentActorManager:
             logger.error(f"First 100 chars of response: {response.text[:100]}")
             raise
     
+    # async def _aiohttp_request(self, data):
+    #     try:
+    #         timeout = aiohttp.ClientTimeout(total=None)
+    #         session = aiohttp.ClientSession(timeout=timeout)
+    #         async with session.post(
+    #             url=self.config.tool_server_url,
+    #             json=data,
+    #         ) as resp:
+    #             data = await resp.json()
+    #             return data
+    #     finally:
+    #         await session.close()
+
     async def _aiohttp_request(self, data):
-        try:
-            timeout = aiohttp.ClientTimeout(total=None)
-            session = aiohttp.ClientSession(timeout=timeout)
-            async with session.post(
-                url=self.config.tool_server_url,
-                json=data,
-            ) as resp:
-                data = await resp.json()
-                return data
-        finally:
-            await session.close()
+        timeout = aiohttp.ClientTimeout(
+            total=2000,
+            connect=2000,
+            sock_connect=2000,
+            sock_read=2000,
+        )
+        max_retries = 2
+        backoff_base = 2 # 指数退避基础时间
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url=self.config.tool_server_url,
+                        json=data,
+                    ) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                        else:
+                            error_text = await resp.text()
+                            logger.warning(f"Attempt {attempt}: Status {resp.status} - {error_text}")
+                            if not os.path.exists('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs'):
+                                os.makedirs('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs')
+                            with open(f"/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_error_tool_server_badrequest.jsonl", "a") as f:
+                                log_line = {
+                                    "timestamp": time.time(),
+                                    "attempt": attempt,
+                                    "error": repr(data),
+                                    "data": data
+                                }
+                                f.write(json.dumps(log_line) + "\n")
+                            raise aiohttp.ClientError(f"Non-200 status: {resp.status}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Save some logs to attempt_logs/http_error_tool_server.jsonl
+                if not os.path.exists('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs'):
+                    os.makedirs('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs')
+                log_line = {    
+                    "timestamp": time.time(),
+                    "attempt": attempt,
+                    "error": repr(e),
+                    "data": data
+                }
+                with open(f'/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_error_tool_server_timeout.jsonl', 'a') as f:
+                    f.write(json.dumps(log_line) + "\n")
+                logger.warning(f"Attempt {attempt} failed: {repr(e)}")
+                if attempt == max_retries:
+                    logger.error("All retries failed.")
+                    raise
+                await asyncio.sleep(backoff_base ** attempt)  # 指数退避
+
         
     async def send_batch_requests_async(self, batch_data: Dict[str, Any]) -> Dict[str, Any]:
         """Robust version with retry logic"""
@@ -826,6 +978,7 @@ class AgentActorManager:
             logging.error(f"Payload size: {len(str(safe_payload))} chars")
             
             # Save error data for debugging
+
             if not os.path.exists('tmp'):
                 os.mkdir('tmp')  # Ensure tmp directory exists
             error_file = f"tmp/error_data_{uuid.uuid4().hex[:8]}.json"
@@ -870,7 +1023,12 @@ class AgentActorManager:
             batch_data['extra_fields'] = extra_fields.tolist() if isinstance(extra_fields, np.ndarray) else extra_fields
         logger.info(f" - Number of finished responses: {len([x for x in do_actions if not x])} / {len(do_actions)}")
         response = await self.send_batch_requests_async(batch_data)
-        active_observations = response['observations']
+        # print(response)
+        try:
+            active_observations = response['observations']
+        except:
+            print("ERROR RESPONSE: ", response)
+            raise ValueError("Failed to get observations from tool server")
         active_dones = [int(x) for x in response['dones']]
         active_valid_actions = [int(x) for x in response['valids']]
 
