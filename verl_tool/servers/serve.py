@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Set, Union
 from tqdm import tqdm
+import regex as re
 
 import fire
 import uvicorn
@@ -19,6 +20,7 @@ from .utils import hash_requests
 from collections import defaultdict
 
 from .tools import get_tool_cls, ALL_TOOLS, set_use_tqdm
+from dataclasses import dataclass
 
 # Configure logging
 logging.basicConfig(
@@ -28,9 +30,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class DictObservation:
+    """Dataclass for structured observations"""
+    obs: str
+    reward: Union[int, float, None] = None
+    
 class AgentResponse(BaseModel):
     """Model for outgoing agent responses"""
-    observations: List[str]
+    observations: List[Union[str,  dict]]
     dones: List[bool]
     valids: List[bool]
 
@@ -118,14 +126,14 @@ class AsyncToolManager:
         Returns:
             The identified tool type or None if no tool matches
         """
-        # Check for finish condition
         if extra_field.get("finish", False):
             return "finish"
             
         # If only one tool available, use it
         if len(self.tools) == 1:
             return list(self.tools.keys())[0]
-        # # Try to find matching tool
+            
+        # Try to find matching tool (excluding finish tool)
         for tool_type, tool in self.tools.items():
             if tool_type == "finish":
                 continue

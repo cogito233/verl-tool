@@ -27,4 +27,6 @@ class AgentActorConfig:
     mtrl_sep: str= "\n<|im_start|>user\n{obs}<|im_end|>\n<|im_start|>assistant\n"
     turn_end_token: str="<|im_end|>"
     rollout_mode: str="sync" # "sync" or "async"
-    keep_last_obs: bool = True   # 默认兼容旧逻辑
+    keep_last_obs: bool = True   # Zhiheng新增
+    mask_overlong_loss: bool=False # whether to mask the overlong trajectory to not train on it
+    max_concurrent_trajectories: int=None # Maximum number of concurrent trajectories for async rollout. If None, no limit is applied.

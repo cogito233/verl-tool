@@ -56,6 +56,9 @@ VerlTool: A unified and easy-to-extend tool-agent training framework based on ve
 
 
 ## News
++ [2025/06/30] We reproduce Search-R1 with even higher performance on the same benchmarks! See [PR](https://github.com/TIGER-AI-Lab/verl-tool/pull/71) and training [README](examples/train/search_r1/README.md) for more details.
++ [2025/06/28] We support NL2SQL tool RL training. See NL2SQL [README](examples/train/nl2sql/README.md) for more details.
++ [2025/06/26] We support DAPO recipe training. See [DAPO.md](./assets/docs/DAPO.md) for more details.
 + [2025/06/18] VerlTool now officially supports Trajectory-Level asynchronous, speeding up the rollout generation with tool calling by at least 2x! see [asyncRL.md](./assets/docs/asyncRL.md) for more details.
 + [2024/06/16] We have updated the verl submodule to the latest version (06/16) and modified some code to adapt to the new version.
 + [2025/06/13] We integrated [DeepWiki](https://deepwiki.com/TIGER-AI-Lab/verl-tool) for Verl-Tool. Feel free to browse the AI-generated docs and chat with Verl-tool codes.
@@ -81,7 +84,7 @@ git submodule update --init --recursive
 uv sync
 source .venv/bin/activate
 uv pip install -e verl
-uv pip install -e ".[vllm,acecoder,torl]"
+uv pip install -e ".[vllm,acecoder,torl,search_tool]"
 uv pip install "flash-attn<2.8.0" --no-build-isolation
 ```
 
@@ -91,7 +94,7 @@ git submodule update --init --recursive
 conda create --name verl-tool-env python=3.10
 conda activate verl-tool-env
 pip install -e verl
-pip install -e ".[vllm,acecoder,torl]"
+pip install -e ".[vllm,acecoder,torl,search_tool]"
 pip install "flash-attn<2.8.0" --no-build-isolation
 ```
 
@@ -131,7 +134,7 @@ class AgentActorRolloutRefWorker(Worker, ActorRolloutRefWorker, metaclass=AgentA
 
 The `AgentActorManager` handles the multi-turn interaction between the model and the tool server, where the model can call tools and receive observations from the tool server. Please check the detailed design in [verl_tool/llm_agent/manager.py](verl_tool/llm_agent/manager.py).
 
-Configuration parameters are defined in the `AgentActorConfig` class in [verl_tool/llm_agent/config.py](verl_tool/llm_agent/config.py). You can set these parameters by adding `+actor_rollout_ref.agent.{param_name}=value` to the training command.
+Configuration parameters are defined in the `AgentActorConfig` class in [verl_tool/llm_agent/config.py](verl_tool/llm_agent/config.py). You can set these parameters by adding `actor_rollout_ref.agent.{param_name}=value` to the training command.
 
 ### AgentActorConfig Parameters
 
@@ -159,6 +162,7 @@ Configuration parameters are defined in the `AgentActorConfig` class in [verl_to
 | `mtrl_role` | str | `user` | If `enable_mtrl` is enabled, this determines the role of the observation chat turn |
 | `mtrl_sep` | str | `None` | In mtrl mode, this defines a special token that if present in the model's action, indicates it wants to interact with the tool server |
 | `turn_end_token` | str | `"<\|im_end\|>"` | Token used to mark the end of each turn |
+| `max_concurrent_trajectories` | int | `None` | Maximum number of concurrent trajectories for async rollout to avoid crash if too high concurrency. If None, no limit is applied. |
 
 ### Configuration Examples
 
