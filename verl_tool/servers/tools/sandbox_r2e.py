@@ -110,7 +110,7 @@ class R2EEnvActor:
         """
         if "<compute_reward>sandbox_r2e</compute_reward>" in action_str:
             reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
-            reward_str = f"<reward>{reward}</reward>"#<test_output>{test_output}</test_output>" # 暂时不返回test_output
+            reward_str = f"[no_obs] <reward>{reward}</reward>" #<test_output>{test_output}</test_output>" # 暂时不返回test_output
             return reward_str, True, True
 
         try:
@@ -123,12 +123,12 @@ class R2EEnvActor:
             
             # Execute action (same pattern as agent.py)
             with suppress_stdout_stderr():
-                obs, reward, done, info = self.env.step(action, timeout=360)
+                obs, reward, done, info = self.env.step(action, timeout=120)
 
             # if done, then pad the reward into the observation
             if done:
                 reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
-                obs = str(obs)+f"<reward>{reward}</reward>"
+                obs = str(obs)+f"<reward>{reward}</reward>" # Maybe Finished is Here
                 # obs += f"<reward>{reward}</reward>"#<test_output>{test_output}</test_output>"
             
             # Return observation as string (following agent.py pattern)
@@ -234,7 +234,7 @@ class SandboxR2ETool(BaseTool):
             try:
                 future = self.env_actors[trajectory_id].close_env.remote()
                 # 添加超时，比如10秒
-                ray.get(future, timeout=30)
+                ray.get(future, timeout=60)
             except ray.exceptions.GetTimeoutError:
                 print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
             except Exception as e:
@@ -311,7 +311,16 @@ class SandboxR2ETool(BaseTool):
             # Filter existing command files
             existing_command_files = [f for f in command_files if f.exists()]
             
+            # for retry in range(5):
+            #     try:
+            #         actor = R2EEnvActor.remote(ds, existing_command_files)
+            #         break
+            #     except Exception as e:
+            #         print(f"Error creating actor for trajectory_id: {trajectory_id}: {e}")
+            #         time.sleep(20)
             actor = R2EEnvActor.remote(ds, existing_command_files)
+            
+            # if actor is None:
             self.save_env(trajectory_id, actor)
 
         # 2) Decide whether we are rendering the first page or taking a step.
@@ -331,7 +340,7 @@ class SandboxR2ETool(BaseTool):
         except ray.exceptions.GetTimeoutError:
             # 超时处理 - 返回指定的值
             print(f"Action timeout after 600 seconds for trajectory_id: {trajectory_id}, action: {action}")
-            return "[TIMEOUT] <reward>0.0</reward>", True, True
+            return "[TIMEOUT] (conduct_action) <reward>0.0</reward>", True, True
         except Exception as e:
             # 其他异常处理
             print(f"Error in conduct_action for trajectory_id: {trajectory_id}, error: {e}")
@@ -385,7 +394,7 @@ class SandboxR2ETool(BaseTool):
             # 给一个合理的总超时时间（比单个超时稍长）
             done_futures, pending_futures = wait(
                 future_to_idx.keys(), 
-                timeout=max(680, n * 5),  # 比单个超时(120s)稍长一点
+                timeout=max(1000, n * 10),  # 比单个超时(120s)稍长一点
                 return_when=ALL_COMPLETED
             )
             
@@ -401,7 +410,7 @@ class SandboxR2ETool(BaseTool):
                         print(f"[ERROR] trajectory_id={trajectory_ids[idx]}: {err}")
                 except Exception as e:
                     print(f"[ERROR] Failed to get result for idx={idx}: {e}")
-                    observations[idx] = f"[ERROR] {str(e)} <reward>0.0</reward>"
+                    observations[idx] = f"[ERROR] (get_observations) {str(e)} <reward>0.0</reward>"
                     dones[idx] = True
                     valid_flags[idx] = True
             
@@ -410,7 +419,7 @@ class SandboxR2ETool(BaseTool):
                 idx = future_to_idx[future]
                 print(f"[TIMEOUT] Future timed out for trajectory_id={trajectory_ids[idx]}")
                 future.cancel()  # Try to cancel
-                observations[idx] = "[TIMEOUT] <reward>0.0</reward>"
+                observations[idx] = "[TIMEOUT] (get_observations) <reward>0.0</reward>"
                 dones[idx] = True
                 valid_flags[idx] = True
 
@@ -429,7 +438,7 @@ class SandboxR2ETool(BaseTool):
             # Submit all delete tasks
             delete_futures = [pool.submit(_delete_env_if_needed, i) for i in range(n)]
             # Wait with timeout
-            done_deletes, pending_deletes = wait(delete_futures, timeout=max(60, n/2))
+            done_deletes, pending_deletes = wait(delete_futures, timeout=max(120, n))
             
             # Cancel any pending deletes
             for future in pending_deletes:
@@ -442,7 +451,7 @@ class SandboxR2ETool(BaseTool):
 
     def _cleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 512:
+        while len(self.env_actors) > 1024:
             # raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
             oldest = self.actor_creation_order.pop(0)
             print(f"[INFO] Deleting actor {oldest} due to too many actors.")

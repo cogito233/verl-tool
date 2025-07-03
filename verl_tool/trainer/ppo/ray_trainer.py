@@ -345,6 +345,10 @@ class AgentRayPPOTrainer(RayPPOTrainer):
                     batch = batch.union(gen_batch_output)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
+                    # Xiancai: Here is a problem that the response_mask is not correct.
+                    batch.batch["response_mask"] = batch.batch["loss_mask"][:, -batch.batch["response_mask"].size(1):]
+                    # Actually won't affect the result (I guess...), because the response_mask is not used in the reward function.
+
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),

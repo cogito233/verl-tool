@@ -158,6 +158,7 @@ class AsyncToolManager:
                 for i in range(len(trajectory_ids)):
                     record = {
                         "traj_id": trajectory_ids[i],
+                        "traj_ids": trajectory_ids,
                         "action": actions[i],
                         "observation": observations[i],
                         "done": dones[i],
@@ -488,7 +489,7 @@ def main(
     host: str = "0.0.0.0",
     port: int = 5000,
     workers_per_tool: int = None,
-    max_concurrent_requests: int = 128,
+    max_concurrent_requests: int = 512,
     use_tqdm: bool = False,
     log_level: str = "error",
     slient=False,

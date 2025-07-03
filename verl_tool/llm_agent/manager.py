@@ -1055,13 +1055,13 @@ class AgentActorManager:
 
     async def _aiohttp_request(self, data):
         timeout = aiohttp.ClientTimeout(
-            total=1200,
-            connect=1200,
-            sock_connect=1200,
-            sock_read=1200,
+            total=2000,
+            connect=2000,
+            sock_connect=2000,
+            sock_read=2000,
         )
         max_retries = 2
-        backoff_base = 2  # 指数退避基础时间
+        backoff_base = 2 # 指数退避基础时间
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -1075,18 +1075,28 @@ class AgentActorManager:
                         else:
                             error_text = await resp.text()
                             logger.warning(f"Attempt {attempt}: Status {resp.status} - {error_text}")
+                            if not os.path.exists('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs'):
+                                os.makedirs('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs')
+                            with open(f"/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_error_tool_server_badrequest.jsonl", "a") as f:
+                                log_line = {
+                                    "timestamp": time.time(),
+                                    "attempt": attempt,
+                                    "error": repr(data),
+                                    "data": data
+                                }
+                                f.write(json.dumps(log_line) + "\n")
                             raise aiohttp.ClientError(f"Non-200 status: {resp.status}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 # Save some logs to attempt_logs/http_error_tool_server.jsonl
-                if not os.path.exists('attempt_logs'):
-                    os.makedirs('attempt_logs')
+                if not os.path.exists('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs'):
+                    os.makedirs('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs')
                 log_line = {    
                     "timestamp": time.time(),
                     "attempt": attempt,
                     "error": repr(e),
                     "data": data
                 }
-                with open(f'attempt_logs/http_error_tool_server.jsonl', 'a') as f:
+                with open(f'/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_error_tool_server_timeout.jsonl', 'a') as f:
                     f.write(json.dumps(log_line) + "\n")
                 logger.warning(f"Attempt {attempt} failed: {repr(e)}")
                 if attempt == max_retries:
