@@ -8,7 +8,7 @@ class AgentActorConfig:
     max_start_length: int=None
     max_prompt_length: int=None
     max_response_length: int=None
-    max_model_len: int=None  # Maximum model length, used for async rollout to limit the input length.
+    max_model_len: int=32768  # Maximum model length, used for async rollout to limit the input length.
     max_obs_length: int=None
     max_action_length: int=None
     tool_server_url: str = None

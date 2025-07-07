@@ -98,6 +98,10 @@ class AgentActorManager:
             messages = [{"role": "system", "content": "{obs}"}]
             self.config.mtrl_sep = "\n" + self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             self.config.mtrl_sep = self.config.mtrl_sep.replace("system", self.config.mtrl_role)
+        #     self._mtrl_sep_no_gen = "\n" + self.tokenizer.apply_chat_template(
+        #         messages, tokenize=False, add_generation_prompt=False
+        #     ).replace("system", self.config.mtrl_role)
+        # self._first_obs = True
         self.max_action_length = self.config.max_action_length if self.config.max_action_length is not None else 0
         self.max_model_len = int(config.max_model_len or config.max_prompt_length + config.max_response_length)
         self.tokenizer_lock = asyncio.Lock()
@@ -239,6 +243,10 @@ class AgentActorManager:
     async def _process_next_obs(self, next_obs: List[str], dones: List[bool], valid_action: List[bool], finishs: List[bool]) -> torch.Tensor:
         """Process next observations from environment."""
         async with self.tokenizer_lock:
+            # if self._first_obs and self.config.call_tool_first:
+            #     mtrl_sep = self._mtrl_sep_no_gen
+            #     self._first_obs = False
+            # else:
             mtrl_sep = self.config.mtrl_sep
             # next_obs = [obs if not done else "" for obs, done in zip(next_obs, dones)]
             next_obs = [obs if not done else obs for obs, done in zip(next_obs, dones)] # Zhiheng: keep the last observation, for evaluation
@@ -553,7 +561,10 @@ class AgentActorManager:
         agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
 
         perf_timer.end('initialization')
-
+        # print("--------------------------------")
+        # print(f"self.config.call_tool_first: {self.config.call_tool_first}")
+        # print("--------------------------------")
+        # exit(1)
         if self.config.call_tool_first:
             perf_timer.start('initial_tool_call')
             # Added Zhiheng: Add initial observation to the prompt from server, use response=""

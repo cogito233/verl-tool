@@ -8,6 +8,7 @@ from verl.workers.rollout.chat_scheduler import ChatCompletionScheduler, logger,
 from openai.types import Completion
 from openai import AsyncOpenAI
 from typing import Union, List, Dict, Any, Iterable
+from pathlib import Path
 from verl.protocol import DataProto
 from verl_tool.llm_agent import AgentActorManager, AgentActorConfig
 import os
@@ -137,7 +138,8 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
             ) as resp:
                 data = await resp.json()
                 if resp.status != 200:
-                    raise ValueError(f"Request failed with status {data['code']}: {data}")
+                    logger.error(f"Request failed with status address: {address}; headers: {extra_headers}; request: {complete_request}")
+                    raise ValueError(f"Request failed with status {data['code']}: {data}; request: {complete_request}")
                 return Completion(**data)
         finally:
             await session.close()
@@ -150,14 +152,34 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
     ):
         """Submit chat completion request, wait request finish and do callback."""
         if request_id:
-            request_id = request_id.removeprefix("chatcmpl-")
-            if request_id not in self.request_id_to_address:
+            # request_id = request_id.removeprefix("chatcmpl-")
+            # if request_id not in self.request_id_to_address:
+            # ──────────────── ① 生成唯一 request_id ────────────────
+            raw_request_id = request_id.removeprefix("chatcmpl-")
+            request_id = f"{raw_request_id}_{int(time.time()*1e6)}"
+
+            # ──────────────── ② 记录 old→new 映射 ────────────────
+            try:
+                log_dir = Path("/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with (log_dir / "request_id_map.jsonl").open("a") as f:
+                    f.write(json.dumps({"ts": time.time(),
+                                        "old_id": raw_request_id,
+                                        "new_id": request_id}) + "\n")
+            except Exception as _e:
+                logger.warning(f"failed to log request_id map: {_e}")
+
+            # ──────────────── ③ 选路由 ────────────────
+            if raw_request_id not in self.request_id_to_address:
                 address = self.weighted_addresses[0][1]
                 self.weighted_addresses[0][0] += 1
                 heapq.heapreplace(self.weighted_addresses, self.weighted_addresses[0])
-                self.request_id_to_address[request_id] = address
-            assert request_id in self.request_id_to_address
-            address = self.request_id_to_address.pop(request_id)
+                self.request_id_to_address[raw_request_id] = address
+            assert raw_request_id in self.request_id_to_address
+            address = self.request_id_to_address.pop(raw_request_id)
+            #     self.request_id_to_address[request_id] = address
+            # assert request_id in self.request_id_to_address
+            # address = self.request_id_to_address.pop(request_id)
         else:
             raise ValueError("request_id must be provided for chat completion requests.")
 
@@ -172,15 +194,37 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         sampling_params = {k: v for k, v in info["__sampling_params__"].items() if k in openai_completion_allowed_keys}
         extra_body = {k: v for k, v in info["__sampling_params__"].items() if k not in openai_completion_allowed_keys}
         completion, exception = None, None
+        sampling_params["max_tokens"] = 1536
+
+        if sampling_params.get("temperature", 0) == 0: # Hard coded for temperature 0 at the validation time
+            sampling_params["temperature"] = 1.0
+
         if "max_tokens" in sampling_params:
             prompt_len = len(prompt)
             if prompt_len + sampling_params["max_tokens"] > self.max_model_len:
                 sampling_params["max_tokens"] = self.max_model_len - prompt_len
-                if sampling_params["max_tokens"] <= 0:
-                    raise ValueError(f"max_tokens {sampling_params['max_tokens']} is too small for prompt length {prompt_len} and max model length {self.max_model_len}.")
                 logger.debug(f"Adjusted max_tokens to {sampling_params['max_tokens']} for prompt length {prompt_len} and max model length {self.max_model_len}.")
+            if sampling_params["max_tokens"] <= 0:
+                raise ValueError(f"max_tokens {sampling_params['max_tokens']} is too small for prompt length {prompt_len} and max model length {self.max_model_len}.")
+        # print(f"########################################################\n{sampling_params}\n\n{len(prompt)}\n{self.max_model_len}\n########################################################")
+        # if sampling_params.get("max_tokens", 0) > 5000:
+        #     raise ValueError(f"max_tokens {sampling_params['max_tokens']} is too small for prompt length {prompt_len} and max model length {self.max_model_len}.")
         try:
             # NOTE: OpenAI client uses httpx, seems to have performance issue in high concurrency requests.
+            # ──────────────── ④ 记录完整请求 ────────────────
+            try:
+                log_dir = Path("/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with (log_dir / "http_requests_id_log.jsonl").open("a") as f:
+                    f.write(json.dumps({
+                        "ts": time.time(),
+                        "request_id": request_id,
+                        "address": address,
+                        "prompt_len": len(prompt) if hasattr(prompt, "__len__") else None,
+                        "sampling_params": sampling_params
+                    }) + "\n")
+            except Exception as _e:
+                logger.warning(f"failed to log http request: {_e}")
             completion = await self._completions_aiohttp(
                 address,
                 prompt=prompt,
@@ -359,32 +403,58 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         # repeated_batch = [repeated_batch] # for debug
         logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_chunk_batch)}")
         tasks = []
+        if self.max_concurrent_trajectories is None or self.max_concurrent_trajectories <= 0:
+            self.max_concurrent_trajectories = 256
+            logger.warning(f"[VerlToolChatCompletionScheduler] max_concurrent_trajectories is not set, set to 256")
+
         if self.agent_config.enable_agent:
             if self.max_concurrent_trajectories is not None and self.max_concurrent_trajectories > 0:
-                semaphore = asyncio.Semaphore(self.max_concurrent_trajectories)
-                async def run_with_semaphore(batch_index):
-                    async with semaphore:
-                        return await self.agent_actor_manager.run_llm_loop_async(
-                            repeated_chunk_batch[batch_index],
-                            **kwargs
-                        )
+                MAX_CONCURRENCY = self.max_concurrent_trajectories
+                START_INTERVAL = getattr(self.config, "launch_interval_sec", 0.5)
+                
+                queue: asyncio.Queue = asyncio.Queue()
+                sem = asyncio.Semaphore(MAX_CONCURRENCY)
+                results = []
+                
+                async def producer() -> None:
+                    """Feed chunks into the queue at a fixed rate."""
+                    for chunk in repeated_chunk_batch:
+                        await queue.put(chunk)
+                        await asyncio.sleep(START_INTERVAL)
+                    # poison pills to gracefully stop workers
+                    for _ in range(MAX_CONCURRENCY):
+                        await queue.put(None)
+                        
+                async def worker() -> None:
+                    """Consume chunks and run LLM loop with concurrency guard."""
+                    while True:
+                        chunk = await queue.get()
+                        if chunk is None:
+                            break
+                        async with sem:
+                            res = await self.agent_actor_manager.run_llm_loop_async(chunk, **kwargs)
+                            results.append(res)
+                
+                # launch producer + N workers
+                await tqdm.gather(
+                    producer(),
+                    *[asyncio.create_task(worker()) for _ in range(MAX_CONCURRENCY)],
+                    desc="Starting producer-consumer pattern"
+                )
+                
+                gen_outputs = results
+            else:
                 for batch_index in range(len(repeated_chunk_batch)):
                     tasks.append(
                         asyncio.create_task(
-                            run_with_semaphore(batch_index)
+                            self.agent_actor_manager.run_llm_loop_async(
+                                repeated_chunk_batch[batch_index],
+                                **kwargs
+                            )
                         )
                     )
-            for batch_index in range(len(repeated_chunk_batch)):
-                tasks.append(
-                    asyncio.create_task(
-                        self.agent_actor_manager.run_llm_loop_async(
-                            repeated_chunk_batch[batch_index],
-                            **kwargs
-                        )
-                    )
-                )
-            # gen_outputs = await asyncio.gather(*tasks)
-            gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
+                # gen_outputs = await asyncio.gather(*tasks)
+                gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
             output_batch = DataProto.concat(gen_outputs)
         else:
             kwargs["max_tokens"] = self.max_response_length

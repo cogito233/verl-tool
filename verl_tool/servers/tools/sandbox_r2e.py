@@ -332,7 +332,7 @@ class SandboxR2ETool(BaseTool):
 
         # 3) Wait for the Ray RPC to finish with 300s timeout
         try:
-            result = ray.get(fut, timeout=600)  # 300秒超时
+            result = ray.get(fut, timeout=300)  # 300秒超时
             if isinstance(result, tuple):           # step_env
                 obs, done, valid = result
             else:                                   # start_env
@@ -394,7 +394,7 @@ class SandboxR2ETool(BaseTool):
             # 给一个合理的总超时时间（比单个超时稍长）
             done_futures, pending_futures = wait(
                 future_to_idx.keys(), 
-                timeout=max(1000, n * 10),  # 比单个超时(120s)稍长一点
+                timeout=max(400, n * 10),  # 比单个超时(120s)稍长一点
                 return_when=ALL_COMPLETED
             )
             
