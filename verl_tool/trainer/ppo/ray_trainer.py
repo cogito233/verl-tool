@@ -175,6 +175,11 @@ class AgentRayPPOTrainer(RayPPOTrainer):
             }
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
+            # import pickle
+            # with open("/minimax-dialogue/users/ruobai/rl_r2e/test_gen_batch.pkl", "wb") as f:
+            #     pickle.dump(test_gen_batch, f)
+            # exit(1)
+
             # pad to be divisible by dp_size
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             if not self.async_rollout_mode:
@@ -192,6 +197,13 @@ class AgentRayPPOTrainer(RayPPOTrainer):
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
+
+            # Fix potential union conflict: remove extra_info from test_output_gen_batch if it exists in both
+            if (self.config.actor_rollout_ref.agent.enable_agent and 
+                'extra_info' in test_batch.non_tensor_batch and 
+                'extra_info' in test_output_gen_batch.non_tensor_batch):
+                # Remove extra_info from test_output_gen_batch to avoid conflict during union
+                del test_output_gen_batch.non_tensor_batch['extra_info']
 
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info['global_step'] = self.global_steps # added by verl_tool
@@ -290,6 +302,8 @@ class AgentRayPPOTrainer(RayPPOTrainer):
         dapo_substep = 0 # for dapo
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
+                # print(f"batch_dict: {batch_dict}")
+                # exit(1)
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
                 # pop those keys for generation
@@ -301,17 +315,35 @@ class AgentRayPPOTrainer(RayPPOTrainer):
                     non_tensor_batch_keys_to_pop.append("raw_prompt")
                 if "tools_kwargs" in batch.non_tensor_batch:
                     non_tensor_batch_keys_to_pop.append("tools_kwargs")
+                if self.config.actor_rollout_ref.agent.enable_agent:
+                    non_tensor_batch_keys_to_pop.append("extra_info")
+                    additional_non_tensor_keys = ['extra_info']
+                    additional_non_tensor_keys = [k for k in additional_non_tensor_keys if k in batch.non_tensor_batch.keys()]
+                    for key in additional_non_tensor_keys:
+                        if key not in non_tensor_batch_keys_to_pop:
+                            non_tensor_batch_keys_to_pop.append(key)
+                # print(f"additional_non_tensor_keys: {additional_non_tensor_keys}")
+                # print(f"non_tensor_batch_keys_to_pop: {non_tensor_batch_keys_to_pop}")
+                # print(f"batch.non_tensor_batch.keys(): {batch.non_tensor_batch.keys()}")
+                # exit(1)
+                
                 gen_batch = batch.pop(
                     batch_keys=batch_keys_to_pop,
                     non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
                 )
                 # added by verl-tool
-                if self.config.actor_rollout_ref.agent.enable_agent:
-                    additional_non_tensor_keys = ['extra_info']
-                    additional_non_tensor_keys = [k for k in additional_non_tensor_keys if k in batch.non_tensor_batch.keys()]
-                    for key in additional_non_tensor_keys:
-                        gen_batch.non_tensor_batch[key] = batch.non_tensor_batch[key]
+                # if self.config.actor_rollout_ref.agent.enable_agent:
+                #     additional_non_tensor_keys = ['extra_info']
+                #     additional_non_tensor_keys = [k for k in additional_non_tensor_keys if k in batch.non_tensor_batch.keys()]
+                #     for key in additional_non_tensor_keys:
+                #         gen_batch.non_tensor_batch[key] = batch.non_tensor_batch[key]
                 gen_batch.non_tensor_batch['traj_ids'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
+
+                # import pickle
+                # # Save gen_batch to gen_batch.pkl and exit 1
+                # with open("/minimax-dialogue/users/ruobai/rl_r2e/gen_batch.pkl", "wb") as f:
+                #     pickle.dump(gen_batch, f)
+                # exit(1)
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
@@ -346,6 +378,14 @@ class AgentRayPPOTrainer(RayPPOTrainer):
                     batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    
+                    # Fix potential union conflict: remove extra_info from gen_batch_output if it exists in both
+                    if (self.config.actor_rollout_ref.agent.enable_agent and 
+                        'extra_info' in batch.non_tensor_batch and 
+                        'extra_info' in gen_batch_output.non_tensor_batch):
+                        # Remove extra_info from gen_batch_output to avoid conflict during union
+                        del gen_batch_output.non_tensor_batch['extra_info']
+                    
                     batch = batch.union(gen_batch_output)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)

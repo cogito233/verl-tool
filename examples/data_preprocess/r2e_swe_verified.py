@@ -114,16 +114,33 @@ system_prompt = """You are a programming agent who is provided a github issue an
   - Only call one function at a time
   - VERY IMPORTANT: Each response must include both reasoning (as natural text) and function call (in above format) to solve the task.
 """
+user_prompt = """Consider the following github issue:
+  <github_issue>
+  {problem_statement}
+  </github_issue>
 
+  Can you help me implement the necessary changes to the repository to fix the <github_issue>?
+  I've already taken care of all changes to any of the test files described in the <github_issue>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+  Your task is to make the minimal changes to non-tests files in the /testbed directory to ensure the <github_issue> is satisfied.
+
+  IMPORTANT TIP:
+  Follow these steps to resolve the issue:
+  1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.
+  2. Create a script ('reproduce_issue.py') to reproduce the error and execute it to confirm the error
+  3. Edit the sourcecode of the repo to resolve the issue
+  4. Rerun your reproduce script and confirm that the error is fixed!
+  5. Think about edgecases and make sure your fix handles them as well
+  6. When viewing large files, use specific line-ranges, usually within 50 to 100 lines) as required
+  7. NOTE: The repository is at '/testbed' and the current working directory is already '/testbed', so DO NOT include 'testbed/' or 'testbed.' in relative paths in bash commands or reproduction python files. 
+  """
 def build_instances(data, split_name):
     instances = []
     for row_i, row in enumerate(data):
-        # print(row)
-        # print(row.keys())
         instance = {
             "data_source": "r2e_swe",
             "prompt": [
                 {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt.format(problem_statement=row["problem_statement"])},
             ],
             "ability": "r2e_swe",
             "reward_model": {
@@ -193,6 +210,6 @@ def build_dataset(dataset_name, dataset_path):
 
 
 if __name__ == "__main__":
-    dataset_name = "r2e_swe_verified"
+    dataset_name = "r2e_swe_verified_user"
     dataset_path = "/data/minimax-dialogue/users/xiaojun/r2e-gym/datasets/swe-bench-verified"
     build_dataset(dataset_name, dataset_path)

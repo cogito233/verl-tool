@@ -13,6 +13,7 @@ from verl.protocol import DataProto
 from verl_tool.llm_agent import AgentActorManager, AgentActorConfig
 import os
 import json
+import pickle
 
 class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
     """A chat completion scheduler for verl-tool, which is a wrapper around the ChatCompletionScheduler."""
@@ -47,82 +48,6 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
     async def _completions_openai(self, address: str, **complete_request) -> Completion:
         client = AsyncOpenAI(base_url=f"http://{address}/v1", api_key="token-abc123", timeout=None, max_retries=0)
         return await client.completions.create(**complete_request)
-
-    # async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
-    #     timeout = aiohttp.ClientTimeout(
-    #         total=1800,
-    #         connect=1800,
-    #         sock_connect=1800,
-    #         sock_read=1800,
-    #     )
-    #     max_retries = 2
-    #     backoff_base = 2
-
-    #     # 解构额外字段
-    #     extra_body = complete_request.pop("extra_body", {})
-    #     extra_headers = complete_request.pop("extra_headers", {})
-
-    #     # 合并请求体
-    #     complete_request.update(extra_body or {})
-    #     url = f"http://{address}/v1/completions"
-    #     headers = {"Authorization": "Bearer token-abc123", **extra_headers}
-
-    #     for attempt in range(1, max_retries + 1):
-    #         try:
-    #             async with aiohttp.ClientSession(timeout=timeout) as session:
-    #                 async with session.post(
-    #                     url=url,
-    #                     headers=headers,
-    #                     json=complete_request,
-    #                 ) as resp:
-    #                     data = await resp.json()
-    #                     if resp.status == 200:
-    #                         with open(f"/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_success_vllm_server.jsonl", "a") as f:
-    #                             log_line = {
-    #                                 "timestamp": time.time(),
-    #                                 "attempt": attempt,
-    #                                 "data": complete_request,
-    #                                 "resp": data
-    #                             }
-    #                             f.write(json.dumps(log_line) + "\n")
-    #                         return Completion(**data)
-    #                     else:
-    #                         logger.warning(f"[Attempt {attempt}] Non-200 status {resp.status}: {data}")
-    #                         print(f"[Attempt {attempt}] Non-200 status {resp.status}: {data}")
-    #                         if not os.path.exists('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs'):
-    #                             os.makedirs('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs')
-    #                         with open(f"/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_error_vllm_server_badrequest.jsonl", "a") as f:
-    #                             log_line = {
-    #                                 "timestamp": time.time(),
-    #                                 "attempt": attempt,
-    #                                 "error": repr(data),
-    #                                 "data": complete_request
-    #                             }
-    #                             f.write(json.dumps(log_line) + "\n")
-    #                         raise aiohttp.ClientResponseError(
-    #                             request_info=resp.request_info,
-    #                             history=resp.history,
-    #                             status=resp.status,
-    #                             message=str(data),
-    #                             headers=resp.headers,
-    #                         )
-    #         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-    #             # Save some logs to attempt_logs/http_error_vllm_server.jsonl
-    #             if not os.path.exists('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs'):
-    #                 os.makedirs('/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs')
-    #             log_line = {    
-    #                 "timestamp": time.time(),
-    #                 "attempt": attempt,
-    #                 "error": repr(e),
-    #                 "data": complete_request
-    #             }
-    #             with open(f'/minimax-dialogue/users/ruobai/rl_r2e/attempt_logs/http_error_vllm_server_timeout.jsonl', 'a') as f:
-    #                 f.write(json.dumps(log_line) + "\n")
-    #             logger.warning(f"[Attempt {attempt}] Exception: {repr(e)}")
-    #             if attempt == max_retries:
-    #                 logger.error(f"All {max_retries} attempts failed for address {address}")
-    #                 raise e
-    #             await asyncio.sleep(backoff_base ** attempt)  # 指数退避
 
     async def _completions_aiohttp(self, address: str, **complete_request) -> Completion:
         try:
@@ -196,8 +121,8 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         completion, exception = None, None
         sampling_params["max_tokens"] = 1536
 
-        if sampling_params.get("temperature", 0) == 0: # Hard coded for temperature 0 at the validation time
-            sampling_params["temperature"] = 1.0
+        # if sampling_params.get("temperature", 0) == 0: # Hard coded for temperature 0 at the validation time
+        #     sampling_params["temperature"] = 1.0
 
         if "max_tokens" in sampling_params:
             prompt_len = len(prompt)
@@ -268,6 +193,8 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
     async def simple_generate_sequences(
         self, batch: DataProto, **kwargs
     ) -> DataProto:
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_output_batch_0.pkl", "wb") as f:
+        #     pickle.dump(batch, f)
         t_start = time.time()
         kwargs.update({
             "model": self.model_name,
@@ -304,88 +231,17 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                 )
             )
         responses = await tqdm.gather(*tasks, total=len(tasks), desc="Simple generating sequences", disable=len(tasks) < 10)
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_output_batch1.pkl", "wb") as f:
+        #     pickle.dump(batch, f)
         output_batch = self.simple_postprocess(batch, responses)
         output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_output_batch2.pkl", "wb") as f:
+        #     pickle.dump(output_batch, f)
         return output_batch
 
-    # async def generate_sequences(self, batch: DataProto, **kwargs) -> DataProto:
-    #     logger.info("[VerlToolChatCompletionScheduler] generate_sequences start")
-    #     t_start = time.time()
-    #     kwargs.update({
-    #         "model": self.model_name,
-    #         "temperature": self.config.temperature,
-    #         "top_p": self.config.top_p,
-    #     })
-
-    #     # override sampling params for validation
-    #     if batch.meta_info.get("validate", False):
-    #         kwargs["top_p"] = self.config.val_kwargs.top_p
-    #         kwargs["temperature"] = self.config.val_kwargs.temperature
-    #     repeated_batch = self.agent_actor_manager.repeat_inputs_by_n(batch)
-    #     repeated_chunk_batch = repeated_batch.chunk(len(repeated_batch))
-    #     # repeated_batch = [repeated_batch] # for debug
-        
-    #     logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_batch)}")
-    #     # tasks = []
-    #     # for batch_index in range(len(repeated_batch)):
-    #     #     tasks.append(
-    #     #         asyncio.create_task(
-    #     #             self.agent_actor_manager.run_llm_loop_async(
-    #     #                 repeated_batch[batch_index],
-    #     #                 **kwargs
-    #     #             )
-    #     #         )
-    #     #     )
-    #     # # gen_outputs = await asyncio.gather(*tasks)
-    #     # gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
-
-    #     # Begin of Producer–Consumer pattern by Zhiheng------------------------------------
-    #     if self.max_concurrent_trajectories is not None and self.max_concurrent_trajectories > 0:
-    #         MAX_CONCURRENCY = self.max_concurrent_trajectories
-    #     else:
-    #         MAX_CONCURRENCY = getattr(self.config, "max_parallel", 256)          # number of workers
-    #     START_INTERVAL = getattr(self.config, "launch_interval_sec", 0.5)    # seconds between task launches
-
-    #     queue: asyncio.Queue = asyncio.Queue()
-    #     sem = asyncio.Semaphore(MAX_CONCURRENCY)     # guard inner fan-out if any
-    #     results = []                                  # collected outputs
-
-    #     async def producer() -> None:
-    #         """Feed chunks into the queue at a fixed rate."""
-    #         for chunk in repeated_batch:
-    #             await queue.put(chunk)
-    #             await asyncio.sleep(START_INTERVAL)
-    #         # poison pills to gracefully stop workers
-    #         for _ in range(MAX_CONCURRENCY):
-    #             await queue.put(None)
-
-    #     async def worker() -> None:
-    #         """Consume chunks and run LLM loop with concurrency guard."""
-    #         while True:
-    #             chunk = await queue.get()
-    #             if chunk is None:
-    #                 break
-    #             async with sem:
-    #                 res = await self.agent_actor_manager.run_llm_loop_async(chunk, **kwargs)
-    #                 results.append(res)
-
-    #     # launch producer + N workers
-    #     await asyncio.gather(
-    #         producer(),
-    #         *[asyncio.create_task(worker()) for _ in range(MAX_CONCURRENCY)]
-    #     )
-
-    #     gen_outputs = results
-
-    #     output_batch = DataProto.concat(gen_outputs)
-    #     # End of Producer–Consumer pattern by Zhiheng------------------------------------
-
-    #     output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
-    #     logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences for {len(repeated_batch)} number of trajectories done, took", output_batch.meta_info["timing"]["generate_sequences"], "seconds")
-    #     return output_batch
-
-
     async def generate_sequences(self, batch: DataProto, **kwargs) -> DataProto:
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_batch_1.pkl", "wb") as f:
+        #     pickle.dump(batch, f)
         logger.info("[VerlToolChatCompletionScheduler] generate_sequences start")
         t_start = time.time()
         kwargs.update({
@@ -399,7 +255,11 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
             kwargs["top_p"] = self.config.val_kwargs.top_p
             kwargs["temperature"] = self.config.val_kwargs.temperature
         repeated_batch = self.agent_actor_manager.repeat_inputs_by_n(batch)
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_repeated_batch_1.pkl", "wb") as f:
+        #     pickle.dump(repeated_batch, f)
         repeated_chunk_batch = repeated_batch.chunk(len(repeated_batch))
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_chunk_batch_1.pkl", "wb") as f:
+        #     pickle.dump(repeated_chunk_batch[-1], f)
         # repeated_batch = [repeated_batch] # for debug
         logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_chunk_batch)}")
         tasks = []
@@ -432,6 +292,8 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                         if chunk is None:
                             break
                         async with sem:
+                            # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_chunk_batch_2.pkl", "wb") as f:
+                            #     pickle.dump(chunk, f)
                             res = await self.agent_actor_manager.run_llm_loop_async(chunk, **kwargs)
                             results.append(res)
                 
@@ -464,4 +326,6 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
             )
         output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
         logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences for {len(repeated_batch)} number of trajectories done, took", output_batch.meta_info["timing"]["generate_sequences"], "seconds")
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_batch_2.pkl", "wb") as f:
+        #     pickle.dump(output_batch, f)
         return output_batch

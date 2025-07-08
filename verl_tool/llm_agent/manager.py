@@ -137,18 +137,6 @@ class AgentActorManager:
         else:
             n = self.config.n
             inputs = inputs.repeat(n, interleave=True)
-        # 新增：extra_info 也重复 n 倍
-        if 'extra_info' in inputs.non_tensor_batch and inputs.non_tensor_batch['extra_info'] is not None:
-            ori_extra = inputs.non_tensor_batch['extra_info']
-            new_extra = []
-            for i in range(ori_len):
-                for j in range(n):
-                    new_extra.append(ori_extra[i])
-            # 保持类型一致
-            if isinstance(ori_extra, np.ndarray):
-                inputs.non_tensor_batch['extra_info'] = np.array(new_extra, dtype=object)
-            else:
-                inputs.non_tensor_batch['extra_info'] = new_extra
         # add "_{i}" for each trajectory to the traj_ids
         for i in range(ori_len):
             for j in range(n):
@@ -471,39 +459,17 @@ class AgentActorManager:
         active_mask &= new_conditions
         return active_mask.sum().item()  # Return count for logging
 
-    # async def _handle_overlong_finish(
-    #     self,
-    #     overlong_dones: torch.Tensor,
-    #     active_mask: torch.Tensor,
-    #     traj_ids: List[str],
-    #     turns_stats_extra: Dict,
-    #     extra_info=None,
-    # ):
-
-    #     active_mask = active_mask * overlong_dones.to(active_mask.dtype).to(active_mask.device)
-    #     if active_mask.sum() == 0:
-    #         return
-    #     responses_str_all = [""] * len(traj_ids)
-    #     active_traj_ids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
-    #     active_responses_str = ["" for i in range(len(responses_str_all)) if active_mask[i]]
-    #     do_actions = [True] * len(active_traj_ids)
-    #     active_extra_info = [extra_info[i] for i in range(len(extra_info)) if active_mask[i]]
-
-    #     _obs, _dones, _valids, _finishs = await self.interact_with_tool_server(
-    #         active_traj_ids,
-    #         active_responses_str,
-    #         do_actions,
-    #         active_mask,
-    #         extra_fields=active_extra_info,
-    #         is_last_step=True,
-    #     )
-    #     for i in range(len(active_mask)):
-    #         if active_mask[i]:
-    #             turns_stats_extra["last_obs"][i] = "[Overlong] " + _obs[i]
-
-
     async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
+    # ------------------------------------------------------------------ #
+    # 1) 原实现整体搬到这个私有方法，内容保持不变
+    # # ------------------------------------------------------------------ #
+    # async def _run_llm_loop_async_core(
+    #     self,
+    #     gen_batch: DataProto,
+    #     **sampling_params: Dict[str, Any],
+    # ) -> Tuple[Dict, Dict]:
+        """(Unchanged) original guts of `run_llm_loop_async`."""
         perf_timer = PerformanceTimer(do_timer=False)
         perf_timer.start('run_llm_loop_total')
         perf_timer.start('initialization')
@@ -511,6 +477,12 @@ class AgentActorManager:
         # print(gen_batch)
         # print("--------------------------------")
         
+        # import pickle
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch1.pkl", "wb") as f:
+        #     pickle.dump(gen_batch, f)
+        
+        # exit(1)
+
         ori_meta_info = gen_batch.meta_info
         if 'eos_token_id' not in ori_meta_info:
             stop_token_ids = self.tokenizer.eos_token_id + self.additional_eos_token_ids if isinstance(self.tokenizer.eos_token_id, list) else [self.tokenizer.eos_token_id] + self.additional_eos_token_ids
@@ -539,13 +511,15 @@ class AgentActorManager:
         rollings = gen_batch
         traj_ids = gen_batch.non_tensor_batch['traj_ids']
 
-        turns_stats_extra_keys = ['action_lengths', 'obs_lengths', 'rewards', 'tool_interact_info']
+        turns_stats_extra_keys = ['action_lengths', 'obs_lengths', 'rewards', 'tool_interact_info', 'extra_info']
         turns_stats_extra = {}
         turns_stats_extra['last_obs'] = ["" for _ in range(gen_batch.batch['input_ids'].shape[0])]
         for key in turns_stats_extra_keys:
             turns_stats_extra[key] = np.empty((gen_batch.batch['input_ids'].shape[0],), dtype=object)  # rewards can be None, so we use object type
             for i in range(gen_batch.batch['input_ids'].shape[0]):
                 turns_stats_extra[key][i] = []
+        for i in range(gen_batch.batch['input_ids'].shape[0]):
+            turns_stats_extra['extra_info'][i] = gen_batch.non_tensor_batch['extra_info'][i]
         agent_sampling_params = sampling_params.copy()
         agent_sampling_params.update({
             "n": 1,  # already repeated by n times in repeat_inputs_by_n
@@ -631,11 +605,15 @@ class AgentActorManager:
                 rollings.batch,
                 keys=['input_ids', 'attention_mask', 'position_ids']
             ) # TODO: delete
+            # with open("/minimax-dialogue/users/ruobai/rl_r2e/rollings_batch_1.pkl", "wb") as f:
+            #     pickle.dump(rollings, f)
             rollings_active = DataProto.from_dict(
                 {k: v[active_mask] for k, v in rollings.batch.items()},
                 {k: v[active_mask.numpy()] for k, v in rollings.non_tensor_batch.items()},
                 meta_info=ori_meta_info
             )
+            # with open("/minimax-dialogue/users/ruobai/rl_r2e/rollings_active_batch_1.pkl", "wb") as f:
+            #     pickle.dump(rollings_active, f)
             if step == self.config.max_turns and self.config.force_finish_for_last_turn:
                 # remove the action stop tokens in the last turn to force a finish
                 agent_sampling_params.pop('stop')
@@ -756,6 +734,7 @@ class AgentActorManager:
             'last_obs': turns_stats_extra["last_obs"],
             'turn_rewards': turns_stats_extra["rewards"],
             'tool_interact_info': turns_stats_extra["tool_interact_info"],
+            'extra_info': turns_stats_extra["extra_info"],
         }
 
         logger.info(f"ACTIVE_TRAJ_NUM: {active_num_list}")
@@ -768,8 +747,67 @@ class AgentActorManager:
         # Log performance statistics
         perf_timer.log_stats(logger, f"[PERF] Batch size: {gen_batch.batch['input_ids'].shape[0]} - ")
         
+        # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch2.pkl", "wb") as f:
+        #     pickle.dump(results, f)
         return results
     
+
+    # ------------------------------------------------------------------ #
+    # 2) 新包装器：10 分钟超时 & 错误->overlong 处理
+    # ------------------------------------------------------------------ #
+    # async def run_llm_loop_async(
+    #     self,
+    #     gen_batch: DataProto,
+    #     **sampling_params: Dict[str, Any],
+    # ) -> Tuple[Dict, Dict]:
+    #     """
+    #     Wrapper around `_run_llm_loop_async_core` that
+    #     1) enforces a 10-minute wall-clock timeout;
+    #     2) logs any exception/timeout;
+    #     3) returns an all-masked DataProto so downstream training skips it.
+    #     """
+    #     try:
+    #         return await asyncio.wait_for(
+    #             self._run_llm_loop_async_core(gen_batch, **sampling_params),
+    #             timeout=600,  # 10 min
+    #         )
+    #     except Exception as e:  # asyncio.TimeoutError included
+    #         logger.error(f"[run_llm_loop_async] aborted – {repr(e)}")
+
+    #         # ---------- 生成一个“全遮罩”结果，等价于 overlong ----------
+    #         bs = gen_batch.batch["input_ids"].size(0)
+    #         device = gen_batch.batch["input_ids"].device
+    #         total_len = self.config.max_prompt_length + self.config.max_response_length
+
+    #         zero = torch.zeros(
+    #             (bs, total_len),
+    #             dtype=gen_batch.batch["input_ids"].dtype,
+    #             device=device,
+    #         )
+
+    #         dummy = DataProto.from_dict(
+    #             {
+    #                 "prompts": gen_batch.batch["input_ids"],
+    #                 "responses": zero[:, : self.config.max_response_length],
+    #                 "responses_with_loss_mask": zero[:, : self.config.max_response_length],
+    #                 "input_ids": torch.cat(
+    #                     [gen_batch.batch["input_ids"], zero[:, : self.config.max_response_length]],
+    #                     dim=1,
+    #                 ),
+    #                 "attention_mask": zero,
+    #                 "loss_mask": torch.zeros_like(zero),
+    #                "position_ids": zero,
+    #             },
+    #             non_tensors={
+    #                 "traj_ids": gen_batch.non_tensor_batch["traj_ids"],
+    #                 "active_mask": [0] * bs,
+    #                 "turns_stats": [0] * bs,
+    #                 "valid_action_stats": [0] * bs,
+    #                 "error": str(e),
+    #             },
+    #         )
+    #         return dummy
+
     def run_llm_loop(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         return asyncio.run(self.run_llm_loop_async(gen_batch, **sampling_params))
 

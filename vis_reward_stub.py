@@ -23,7 +23,9 @@ def parse_chat_messages(decoded_text):
 def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='解码pkl文件中的token数据为jsonl格式的聊天记录')
-    parser.add_argument('--input', '-i', default="verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-16-29-40/step-31.pkl", help='输入pkl文件路径')
+    # parser.add_argument('--input', '-i', default="verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-16-29-40/step-31.pkl", help='输入pkl文件路径')
+    parser.add_argument('--input', '-i', default="verl_step_records/r2egym-7b-agent-r2e_swe_verified_user-0704-magic-2025-07-07-07-47-51/step-val-0.pkl", help='输入pkl文件路径')
+    # parser.add_argument('--input', '-i', default="verl_step_records/r2egym-7b-agent-r2e_swe_verified_user-0704-magic-2025-07-07-09-35-20/step-1.pkl", help='输入pkl文件路径')
     parser.add_argument('--preview', '-p', type=int, default=2, help='预览样本数量 (默认: 2)')
     parser.add_argument('--model', '-m', default="Qwen/Qwen2.5-7B-Instruct", help='tokenizer模型名称')
     
@@ -100,8 +102,8 @@ def main():
         # print(f"len(input_ids): {len(input_ids[i])}")
         # print(f"sum(loss_mask or attention_mask or response_mask): {sum()}")
         # exit(1)
-        # loss_mask = batch_data['loss_mask'][i]
-        loss_mask = batch_data['response_mask'][i]
+        loss_mask = batch_data['loss_mask'][i]
+        # loss_mask = batch_data['response_mask'][i]
 
         # 先把 pad 裁掉，保持与 tokens 对齐
         # loss_mask = loss_mask[: len(tokens)]
@@ -126,12 +128,14 @@ def main():
         chat_messages = parse_chat_messages(decoded_text)
         
         # 构建数据记录
+        print(non_tensor_batch_data.keys())
         chat_record = {
             "id": i,
             "messages": chat_messages,
             "raw_text": decoded_text,
             "raw_text_with_lossmask": decoded_text_with_lossmask,
             "last_obs": non_tensor_batch_data['last_obs'][i],
+            "extra_info": non_tensor_batch_data['extra_info'][i],
         }
         
         output_data.append(chat_record)

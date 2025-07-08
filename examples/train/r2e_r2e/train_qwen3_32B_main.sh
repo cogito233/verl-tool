@@ -10,22 +10,22 @@ set -x
 dataset_name=r2e_lite
 # dataset_name=r2e_swe_extra_debug
 train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
-val_data=/root/code/rl_r2e/data/$dataset_name/dev.parquet
-model_name=R2EGym-7B-Agent
-model_path=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
+val_data=/root/code/rl_r2e/data/r2e_swe_verified/test.parquet
+model_name=Qwen3-32B
+model_path=Qwen/Qwen3-32B
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=8
-n_nodes=1
+n_nodes=4
 enable_agent=True # enable agent for tool use
 
 # n=8
 # batch_size=32
 n=8
-batch_size=16
+batch_size=64
 
-ppo_mini_batch_size=16
+ppo_mini_batch_size=32
 max_prompt_length=2048
-max_response_length=20480 
+max_response_length=30720 
 max_obs_length=4096
 temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
@@ -49,12 +49,10 @@ enable_mtrl=True
 ulysses_sequence_parallel_size=1 # set to 1 for normal verl behavior, otherwise it will cause OOM
 # === end, added by Zhiheng ===
 
-lr_multiple=1
-critic_lr=5e-6
 actor_lr=1e-5
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0701-r2e-lite-v2"
+run_name="${model_pretty_name}-${dataset_name}-0702-main-bs512"
 export VERL_RUN_ID=$run_name
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
@@ -103,7 +101,7 @@ ray job submit --address="http://127.0.0.1:8265" \
     +actor_rollout_ref.agent.min_action_num=$min_action_num \
     +actor_rollout_ref.agent.truncate_response_side=$truncate_response_side \
     +actor_rollout_ref.agent.truncate_obs_side=$truncate_obs_side \
-    +actor_rollout_ref.agent.max_turns=30 \
+    +actor_rollout_ref.agent.max_turns=40 \
     +actor_rollout_ref.agent.num_gpus=$n_gpus_per_node \
     +actor_rollout_ref.agent.valid_actions=$valid_actions \
     +actor_rollout_ref.agent.no_action_as_stop=False \
@@ -118,21 +116,21 @@ ray job submit --address="http://127.0.0.1:8265" \
     actor_rollout_ref.rollout.top_p=1.0 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
-    critic.optim.lr=$critic_lr \
+    critic.optim.lr=0 \
     critic.strategy=$strategy \
     critic.model.path=$model_path \
     critic.ppo_micro_batch_size_per_gpu=$mirco_batch_size \
     critic.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
-    algorithm.kl_ctrl.kl_coef=0.001 \
+    algorithm.kl_ctrl.kl_coef=0.0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='r2e_swe' \
     trainer.experiment_name=$run_name \
-    trainer.val_before_train=False \
+    trainer.val_before_train=True \
     trainer.default_hdfs_dir=null \
     trainer.default_local_dir=$(pwd)/checkpoints/r2eswe/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
-    trainer.save_freq=10 \
+    trainer.save_freq=5 \
     trainer.test_freq=5 \
     trainer.total_epochs=1
 
