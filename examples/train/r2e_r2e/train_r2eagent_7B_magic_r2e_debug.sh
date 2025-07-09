@@ -109,6 +109,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     +actor_rollout_ref.agent.min_action_num=$min_action_num \
     actor_rollout_ref.agent.truncate_response_side=$truncate_response_side \
     actor_rollout_ref.agent.truncate_obs_side=$truncate_obs_side \
+    actor_rollout_ref.agent.mask_overlong_loss=True \
     actor_rollout_ref.agent.max_turns=40 \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$do_offload \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=$fsdp_size \

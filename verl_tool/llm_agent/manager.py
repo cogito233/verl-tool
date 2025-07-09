@@ -13,6 +13,7 @@ import regex as re
 import numpy as np
 import requests
 import omegaconf
+import pickle
 from collections import defaultdict
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
@@ -459,16 +460,16 @@ class AgentActorManager:
         active_mask &= new_conditions
         return active_mask.sum().item()  # Return count for logging
 
-    async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
-        """Run main LLM generation loop."""
+    # async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
+    #     """Run main LLM generation loop."""
     # ------------------------------------------------------------------ #
     # 1) 原实现整体搬到这个私有方法，内容保持不变
     # # ------------------------------------------------------------------ #
-    # async def _run_llm_loop_async_core(
-    #     self,
-    #     gen_batch: DataProto,
-    #     **sampling_params: Dict[str, Any],
-    # ) -> Tuple[Dict, Dict]:
+    async def _run_llm_loop_async_core(
+        self,
+        gen_batch: DataProto,
+        **sampling_params: Dict[str, Any],
+    ) -> Tuple[Dict, Dict]:
         """(Unchanged) original guts of `run_llm_loop_async`."""
         perf_timer = PerformanceTimer(do_timer=False)
         perf_timer.start('run_llm_loop_total')
@@ -477,11 +478,8 @@ class AgentActorManager:
         # print(gen_batch)
         # print("--------------------------------")
         
-        # import pickle
         # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch1.pkl", "wb") as f:
         #     pickle.dump(gen_batch, f)
-        
-        # exit(1)
 
         ori_meta_info = gen_batch.meta_info
         if 'eos_token_id' not in ori_meta_info:
@@ -538,7 +536,6 @@ class AgentActorManager:
         # print("--------------------------------")
         # print(f"self.config.call_tool_first: {self.config.call_tool_first}")
         # print("--------------------------------")
-        # exit(1)
         if self.config.call_tool_first:
             perf_timer.start('initial_tool_call')
             # Added Zhiheng: Add initial observation to the prompt from server, use response=""
@@ -622,7 +619,12 @@ class AgentActorManager:
             
             # Time the generation
             perf_timer.start(f'step_{step}_generation')
+            # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch2.pkl", "wb") as f:
+            #     pickle.dump(rollings_active, f)
             gen_output = await self.generate_sequences(rollings_active, **agent_sampling_params) # [active_size, response_length]
+            # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch3.pkl", "wb") as f:
+            #     pickle.dump(gen_output, f)
+            # exit(1)
             perf_timer.end(f'step_{step}_generation')
 
             # Time the postprocessing
@@ -755,59 +757,77 @@ class AgentActorManager:
     # ------------------------------------------------------------------ #
     # 2) 新包装器：10 分钟超时 & 错误->overlong 处理
     # ------------------------------------------------------------------ #
-    # async def run_llm_loop_async(
-    #     self,
-    #     gen_batch: DataProto,
-    #     **sampling_params: Dict[str, Any],
-    # ) -> Tuple[Dict, Dict]:
-    #     """
-    #     Wrapper around `_run_llm_loop_async_core` that
-    #     1) enforces a 10-minute wall-clock timeout;
-    #     2) logs any exception/timeout;
-    #     3) returns an all-masked DataProto so downstream training skips it.
-    #     """
-    #     try:
-    #         return await asyncio.wait_for(
-    #             self._run_llm_loop_async_core(gen_batch, **sampling_params),
-    #             timeout=600,  # 10 min
-    #         )
-    #     except Exception as e:  # asyncio.TimeoutError included
-    #         logger.error(f"[run_llm_loop_async] aborted – {repr(e)}")
+    async def run_llm_loop_async(
+        self,
+        gen_batch: DataProto,
+        **sampling_params: Dict[str, Any],
+    ) -> Tuple[Dict, Dict]:
+        """
+        Wrapper around `_run_llm_loop_async_core` that
+        1) enforces a 10-minute wall-clock timeout;
+        2) logs any exception/timeout;
+        3) returns an all-masked DataProto so downstream training skips it.
+        """
+        try:
+            # raise Exception("test")
+            gen_output = await asyncio.wait_for(
+                self._run_llm_loop_async_core(gen_batch, **sampling_params),
+                timeout=600,  # 20 min
+            )
+            # with open(f"/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_normal_{int(time.time()*1e6)}.pkl", "wb") as f:
+            #     pickle.dump(gen_output, f)
+            return gen_output
+        except Exception as e:  # asyncio.TimeoutError included
+            results = self._make_fallback_dataproto(gen_batch, reason=str(e))
+            return results
 
-    #         # ---------- 生成一个“全遮罩”结果，等价于 overlong ----------
-    #         bs = gen_batch.batch["input_ids"].size(0)
-    #         device = gen_batch.batch["input_ids"].device
-    #         total_len = self.config.max_prompt_length + self.config.max_response_length
+    def _make_fallback_dataproto(self, gen_batch: DataProto, *, reason: str) -> Tuple[Dict, Dict]:
+        """Return a minimal DataProto so downstream trainer can skip."""
+        # with open(f"/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_before_exception_{int(time.time()*1e6)}.pkl", "wb") as f:
+        #     pickle.dump(gen_batch, f)
 
-    #         zero = torch.zeros(
-    #             (bs, total_len),
-    #             dtype=gen_batch.batch["input_ids"].dtype,
-    #             device=device,
-    #         )
+        bs = gen_batch.batch["input_ids"].size(0)
 
-    #         dummy = DataProto.from_dict(
-    #             {
-    #                 "prompts": gen_batch.batch["input_ids"],
-    #                 "responses": zero[:, : self.config.max_response_length],
-    #                 "responses_with_loss_mask": zero[:, : self.config.max_response_length],
-    #                 "input_ids": torch.cat(
-    #                     [gen_batch.batch["input_ids"], zero[:, : self.config.max_response_length]],
-    #                     dim=1,
-    #                 ),
-    #                 "attention_mask": zero,
-    #                 "loss_mask": torch.zeros_like(zero),
-    #                "position_ids": zero,
-    #             },
-    #             non_tensors={
-    #                 "traj_ids": gen_batch.non_tensor_batch["traj_ids"],
-    #                 "active_mask": [0] * bs,
-    #                 "turns_stats": [0] * bs,
-    #                 "valid_action_stats": [0] * bs,
-    #                 "error": str(e),
-    #             },
-    #         )
-    #         return dummy
+        # 左侧 prompt（沿用起始 window）
+        initial_input_ids = gen_batch.batch["input_ids"][:, -self.config.max_start_length :].clone()
+        left_side = {"input_ids": initial_input_ids}
 
+        # 右侧响应：全空
+        dummy_resp = initial_input_ids[:, []]  # shape (bs, 0)
+        right_side = {
+            "responses": dummy_resp,
+            "responses_with_loss_mask": dummy_resp,
+        }
+
+        non_tensors = {
+            "traj_ids": gen_batch.non_tensor_batch["traj_ids"].tolist(),
+            "action_lengths": [[0] for _ in range(bs)],
+            "obs_lengths":   [[0] for _ in range(bs)],
+            "last_obs":      ["<reward>0.0</reward>" for _ in range(bs)],
+            "turn_rewards":  [[0.0] for _ in range(bs)],
+            "tool_interact_info": [[0] for _ in range(bs)],
+            "extra_info": gen_batch.non_tensor_batch.get("extra_info", [{}] * bs),
+            # 统计字段给零
+            "turns_stats":       [0] * bs,
+            "valid_action_stats":[0] * bs,
+            "active_mask":       [False] * bs,
+            # 把 reason 变成 batch-size list，保证长度对齐
+            "reason": [reason] * bs,
+        }
+
+        fallback = self._compose_final_output(
+            left_side, right_side, non_tensors, gen_batch.meta_info, is_exception=True
+        )
+
+        # 方便事后排查
+        with open(
+            f"/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_exception_{reason}_{int(time.time()*1e6)}.pkl",
+            "wb",
+        ) as f:
+            pickle.dump({"gen_batch": gen_batch, "fallback": fallback}, f)
+
+        return fallback
+    
     def run_llm_loop(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         return asyncio.run(self.run_llm_loop_async(gen_batch, **sampling_params))
 
@@ -816,7 +836,8 @@ class AgentActorManager:
         left_side: Dict,
         right_side: Dict,
         non_tensors: Dict,
-        meta_info: Dict
+        meta_info: Dict,
+        is_exception: bool = False
     ) -> Tuple[Dict, Dict]:
         """
         Compose the final output of the rollout by merging prompt and response
@@ -888,17 +909,36 @@ class AgentActorManager:
             final_output['loss_mask'] = final_output['attention_mask']
         
         # if mask overlong trajectory is enabled, we need to mask the overlong trajectory
-        if self.config.mask_overlong_loss:
+        if self.config.mask_overlong_loss: # or is_exception: mask should on overlong_mask option
             # set loss_mask to 0 for those overlong trajectories
             effective_lens = self.tensor_fn.create_attention_mask(final_output['responses']).sum(dim=1)
-            overlong_mask = effective_lens >= self.config.max_response_length
+            if is_exception:
+                overlong_mask = torch.ones_like(effective_lens, dtype=torch.bool)
+            else:
+                overlong_mask = effective_lens >= self.config.max_response_length
             final_output['loss_mask'][overlong_mask] = 0
-            logger.debug(f"Masked {overlong_mask.sum().item()}/{final_output['loss_mask'].shape[0]} overlong trajectories.")
+            logger.debug(f"Masked {overlong_mask.sum().item()}/{final_output['loss_mask'].shape[0]} overlong/exception trajectories.")
 
         # Create position ids
         final_output['position_ids'] = self.tensor_fn.create_position_ids(
             final_output['attention_mask']
         ) # [bs*n, prompt_length + max_response_length]
+
+        # ----------- DEBUG BLOCK BEGIN -----------
+        batch_size_dbg = None
+        for k, v in final_output.items():
+            if torch.is_tensor(v):
+                logger.debug(f"[DBG] {k}: {tuple(v.shape)}")
+                if batch_size_dbg is None:
+                    batch_size_dbg = v.shape[0]
+                else:
+                    assert v.shape[0] == batch_size_dbg, \
+                        f"{k} batch dim mismatch ({v.shape[0]} vs {batch_size_dbg})"
+            elif isinstance(v, np.ndarray):
+                logger.debug(f"[DBG] {k}: np.{v.dtype}{v.shape}")
+            else:
+                logger.debug(f"[DBG] {k}: {type(v)} len={len(v) if hasattr(v,'__len__') else 'NA'}")
+        # ----------- DEBUG BLOCK END -------------
 
         # ---------- 3. Create and return DataProto ----------
         final_output = DataProto.from_dict(final_output, non_tensors=non_tensors)
@@ -916,18 +956,7 @@ class AgentActorManager:
         """
         safe_payload = sanitize_request(batch_data)
         response = requests.post(self.config.tool_server_url, json=safe_payload)
-        # exit(1)
         if response.status_code != 200:
-            # print("#" * 100)
-            # # print(safe_payload)
-            # print("URL:", self.config.tool_server_url)
-            # print("Length of trajectory ids:", len(safe_payload['trajectory_ids']))
-            # print("Length of actions:", len(safe_payload['actions']))
-            # print("Length of finish:", len(safe_payload['finish']))
-            # print("Length of extra fields:", len(safe_payload.get('extra_fields', [])))
-            # print("$" * 100)
-            # print(response)
-            # print("#" * 100)
             os.makedirs('tmp', exist_ok=True)  # Ensure tmp directory exists
             with open("tmp/error_data.json", 'w') as f:
                 json.dump(batch_data, f, indent=4)
@@ -1154,3 +1183,20 @@ class AgentActorManager:
                     loop.run_until_complete(self._http_session.close())
             except:
                 pass  # Best effort cleanup
+
+
+if __name__ == "__main__":
+    manager = AgentActorManager(
+        model_path="/minimax-dialogue/users/ruobai/rl_r2e/models/Qwen2.5-3B-Instruct",
+        actor_rollout_wg=None,
+        config=AgentActorConfig(
+            max_turns=10,
+            max_start_length=10,
+            max_response_length=10,
+        )
+    )
+    data_proto_path = "/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_before_exception_1752039844489704.pkl"
+    with open(data_proto_path, "rb") as f:
+        data_proto = pickle.load(f)
+    results = manager.run_llm_loop_async(data_proto)
+    print(results)

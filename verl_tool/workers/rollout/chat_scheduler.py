@@ -83,7 +83,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         original_raw_request_id = request_id.removeprefix("chatcmpl-")
         
         # 重试逻辑
-        max_retries = 5
+        max_retries = 4
         timeout = 180  # seconds
         last_exception = None
         
@@ -92,11 +92,13 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                 # ──────────────── ① 生成唯一 request_id ────────────────
                 if attempt == 0:
                     raw_request_id = original_raw_request_id
+                    request_id = f"{raw_request_id}"
                 else:
                     # 重试时生成新的 raw_request_id
                     raw_request_id = f"{original_raw_request_id}_retry{attempt}"
+                    request_id = f"{raw_request_id}_{int(time.time()*1e6)}"
                 
-                request_id = f"{raw_request_id}_{int(time.time()*1e6)}"
+                # request_id = f"{raw_request_id}_{int(time.time()*1e6)}"
 
                 # ──────────────── ② 记录 old→new 映射 ────────────────
                 try:
@@ -189,6 +191,7 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
                 # 清理当前 request_id
                 self.request_id_to_address.pop(request_id, None)
                 if attempt < max_retries - 1:
+                    timeout = timeout * 2
                     continue
                 else:
                     # 最后一次重试也失败了，清理原始 request_id
