@@ -383,10 +383,7 @@ actor_rollout_ref:
     # TP size for rollout. Only effective for vLLM.
     tensor_model_parallel_size: 2
 
-    # max number of tokens in a batch
-    max_num_batched_tokens: 8192
-
-    # max length for rollout
+    max_num_batched_tokens: 32768
     max_model_len: null
 
     # max length of sequences
@@ -409,7 +406,7 @@ actor_rollout_ref:
 
     # may get higher throughput when set to True. When activated, Please increase max_num_batched_tokens or decrease max_model_len.
     enable_chunked_prefill: True
-
+    
     # for hf rollout
     # Whether to sample during training rollout. False uses greedy sampling.
     do_sample: True
