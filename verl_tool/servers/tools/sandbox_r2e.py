@@ -43,27 +43,23 @@ class R2EEnvActor:
             ds: Dataset entry containing docker_image and other info
             command_files: Command files to add to environment
         """
-        # print(f"in the R2EEnvActor, ds: {ds}")
-        # import json
-        # # save to example.json
-        # with open("example.json", "w") as f:
-        #     json.dump(ds, f)
-        # exit(1)
+        # print("Checkpoint 1, start init R2EEnvActor")
         self.ds = ds
         self.command_files = command_files or []
-        
+                
         # Initialize environment directly
         env_args = EnvArgs(ds=ds)
         self.env = RepoEnv(env_args)
-        # Reset environment
+        # print("Checkpoint 2, init RepoEnv")
         self.env.reset()
         
         # Add command files if provided
         if self.command_files:
             self.env.add_commands(self.command_files)
             print("add command files")
+
+        # print("Checkpoint 3, init RepoEnv done")
         
-        # print(self.env.commands)
 
     def start_env(self) -> str:
         """
@@ -72,6 +68,7 @@ class R2EEnvActor:
         Returns:
             Initial problem statement
         """
+        # print("Checkpoint 4, start get_task_instruction")
         # Get initial problem statement
         problem_statement = self.env.runtime.get_task_instruction()
         user_prompt = f"""Consider the following github issue:
@@ -108,6 +105,7 @@ class R2EEnvActor:
             - done: Whether task is complete
             - valid: Whether action was valid
         """
+        # print("Checkpoint 5, start step_env")
         if "<compute_reward>sandbox_r2e</compute_reward>" in action_str:
             reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
             reward_str = f"[no_obs] <reward>{reward}</reward>" #<test_output>{test_output}</test_output>" # 暂时不返回test_output
@@ -121,9 +119,12 @@ class R2EEnvActor:
             if action is None or not action.function_name:
                 return "Failed to parse action. Invalid XML format or missing function name.", False, False
             
+            # print("Checkpoint 6, start step_env, action: ", action)
+
             # Execute action (same pattern as agent.py)
             with suppress_stdout_stderr():
                 obs, reward, done, info = self.env.step(action, timeout=120)
+            # print("Checkpoint 7, start step_env done, obs: ", obs)
 
             # if done, then pad the reward into the observation
             if done:
@@ -143,25 +144,15 @@ class R2EEnvActor:
         """
         Reward the environment, return the reward, validity and test output
         """
+        # print("Checkpoint 8, start reward_env")
         if action_str == "<compute_reward>sandbox_r2e</compute_reward>":
             with suppress_stdout_stderr():
                 reward, test_output = self.env.runtime._calculate_reward(get_test_output=True)
             reward = float(reward)
+            # print("Checkpoint 9, start reward_env done, reward: ", reward)
             return reward, True, test_output
         else:
             raise ValueError(f"Invalid reward action: {action_str}")
-        
-    # def close_env(self):
-    #     # print(f"in the close_env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
-    #     # Write to env_deleted.jsonl the following information: trajectory_id, timestamp, job_name
-    #     json_content = {
-    #         "timestamp": time.time(),
-    #         "job_name": self.env.runtime.job_name
-    #     }
-    #     print(f"Deleting env, timestamp: {time.time()}, job_name: {self.env.runtime.job_name}")
-    #     with open("env_deleted.jsonl", "a") as f:
-    #         f.write(json.dumps(json_content) + "\n")
-    #     self.env.close()
 
     def close_env(self):
         """关闭环境，带超时机制"""
@@ -194,7 +185,7 @@ class SandboxR2ETool(BaseTool):
     """
     tool_type = "sandbox_r2e"
 
-    def __init__(self, num_workers=4):
+    def __init__(self, num_workers=512):
         super().__init__(num_workers)
         # Maps trajectory_id to Ray Actor
         self.env_actors = {}
@@ -229,29 +220,68 @@ class SandboxR2ETool(BaseTool):
                 self.actor_creation_order.remove(trajectory_id)
             self.actor_creation_order.append(trajectory_id)
 
-    def delete_env(self, trajectory_id):
+    # ---------- async 版本 ----------
+    async def asave_env(self, trajectory_id: str, actor):
+        """Async register / refresh; awaits async cleanup."""
+        if self.env_actors.get(trajectory_id) is None:
+            self.env_actors[trajectory_id] = actor
+            self.actor_creation_order.append(trajectory_id)
+            await self._acleanup_actors_if_needed()
+        else:
+            if self.env_actors[trajectory_id] != actor:
+                raise RuntimeError(
+                    f"Actor with trajectory_id {trajectory_id} already exists."
+                )
+            if trajectory_id in self.actor_creation_order:
+                self.actor_creation_order.remove(trajectory_id)
+            self.actor_creation_order.append(trajectory_id)
+
+    # def delete_env(self, trajectory_id):
+    #     if trajectory_id in self.env_actors:
+    #         try:
+    #             future = self.env_actors[trajectory_id].close_env.remote()
+    #             # 添加超时，比如10秒
+    #             ray.get(future, timeout=60)
+    #         except ray.exceptions.GetTimeoutError:
+    #             print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
+    #         except Exception as e:
+    #             print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
+            
+    #         # 无论是否超时，都强制kill
+    #         try:
+    #             ray.kill(self.env_actors[trajectory_id], no_restart=True)
+    #         except Exception as e:
+    #             print(f"Error killing actor for trajectory_id: {trajectory_id}: {e}")
+            
+    #         if trajectory_id in self.env_actors:
+    #             del self.env_actors[trajectory_id]
+        
+    #     if trajectory_id in self.actor_creation_order:
+    #         self.actor_creation_order.remove(trajectory_id)
+
+    async def adelete_env(self, trajectory_id):
         if trajectory_id in self.env_actors:
             try:
-                future = self.env_actors[trajectory_id].close_env.remote()
-                # 添加超时，比如10秒
-                ray.get(future, timeout=60)
-            except ray.exceptions.GetTimeoutError:
-                print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
+                fut = self.env_actors[trajectory_id].close_env.remote()
+                # 把阻塞的 ray.get 换成真正的 await
+                try:
+                    await asyncio.wait_for(fut, timeout=60)
+                except asyncio.TimeoutError:
+                    print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
             except Exception as e:
-                print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
-            
-            # 无论是否超时，都强制kill
-            try:
-                ray.kill(self.env_actors[trajectory_id], no_restart=True)
-            except Exception as e:
-                print(f"Error killing actor for trajectory_id: {trajectory_id}: {e}")
-            
+                 print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
+
             if trajectory_id in self.env_actors:
-                del self.env_actors[trajectory_id]
-        
+                 del self.env_actors[trajectory_id]
+         
         if trajectory_id in self.actor_creation_order:
             self.actor_creation_order.remove(trajectory_id)
-    
+
+    # ---- 兼容旧的同步调用路径 ----
+    def delete_env(self, trajectory_id):
+        """Sync wrapper kept for legacy code paths."""
+        asyncio.run(self.adelete_env(trajectory_id))
+
     def parse_action(self, action):
         """
         检查action是否为有效的R2E动作格式。
@@ -281,178 +311,130 @@ class SandboxR2ETool(BaseTool):
         print(f"Action: {action}, maybe it is invalid")
         return action, True
 
+    def _cleanup_actors_if_needed(self):
+        """Remove oldest actors if count exceeds limit."""
+        while len(self.env_actors) > 1024:
+            raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
+            # Not Implemented for Async
+            oldest = self.actor_creation_order.pop(0)
+            print(f"[INFO] Deleting actor {oldest} due to too many actors.")
+            self.delete_env(oldest)
 
-    def conduct_action(self, trajectory_id: str, action: str, extra_field: dict):
-        """
-        Execute a *single* action on the environment for `trajectory_id`.
+    async def _acleanup_actors_if_needed(self):
+        """Remove oldest actors if count exceeds limit."""
+        while len(self.env_actors) > 1024:
+            raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
+            # Not Implemented for Async
+            oldest = self.actor_creation_order.pop(0)
+            print(f"[INFO] Deleting actor {oldest} due to too many actors.")
+            await self.adelete_env(oldest)
 
-        Returns
-        -------
-        obs : str
-            Environment observation (empty string if episode finished).
-        done : bool
-            Whether the episode ended with this step.
-        valid : bool
-            Whether the action itself was valid.
-        """
-        # 1) Ensure an actor exists (lazy creation).
+    async def aconduct_action(
+        self, trajectory_id: str, action: str, extra_field: dict
+    ):
+        """完全异步，不阻塞事件循环。"""
+        # print("Checkpoint 10, start aconduct_action")
         actor = self.load_env(trajectory_id)
-        if actor is None:
-            # Create a brand-new R2EEnvActor for this trajectory.
-            ds = extra_field.get("ds", extra_field.get("extra_fields", extra_field))
-            # Default command files
-            command_files = [
+        if actor is None:                        # 懒创建
+            actor = await self._aspawn_actor(trajectory_id, extra_field)
+            await self.asave_env(trajectory_id, actor)
+        # print("Checkpoint 11, start save_env done")
+
+        # === 把 Ray 调用也异步化 ===
+        obj_ref = (
+            actor.start_env.remote()
+            if not action
+            else actor.step_env.remote(action)
+        )
+        # print("Checkpoint 12, start obj_ref")
+        try:
+            # Ray≥2.10 支持 `await obj_ref`
+            result = await asyncio.wait_for(obj_ref, timeout=300)
+        except asyncio.TimeoutError:
+            return "[TIMEOUT] (aconduct_action) <reward>0.0</reward>", True, True
+        except Exception as e:
+            return f"Error: {e}", False, False
+        # print("Checkpoint 13, start obj_ref done")
+        # 拆包
+        if isinstance(result, tuple):
+            obs, done, valid = result
+        else:
+            obs, done, valid = result, False, True
+        # print("Checkpoint 14, start result done")
+        # LRU 刷新
+        if trajectory_id in self.actor_creation_order:
+            self.actor_creation_order.remove(trajectory_id)
+        self.actor_creation_order.append(trajectory_id)
+        # print("Checkpoint 15, start LRU done")          
+        if not valid:
+            obs = f"The action {action} is invalid, please retry, obs is {obs}"
+        return obs, done, valid
+    
+    async def _aspawn_actor(self, trajectory_id: str, extra_field: dict):
+        ds = extra_field.get("ds", extra_field)
+        cmd_files = [
                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search.py"),
-                # Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/search_dir.py"),
                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/file_editor.py"),
                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/execute_bash.py"),
                 Path("/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/src/r2egym/agenthub/tools/finish.py")
             ]
-            # Filter existing command files
-            existing_command_files = [f for f in command_files if f.exists()]
-            
-            # for retry in range(5):
-            #     try:
-            #         actor = R2EEnvActor.remote(ds, existing_command_files)
-            #         break
-            #     except Exception as e:
-            #         print(f"Error creating actor for trajectory_id: {trajectory_id}: {e}")
-            #         time.sleep(20)
-            actor = R2EEnvActor.remote(ds, existing_command_files)
-            
-            # if actor is None:
-            self.save_env(trajectory_id, actor)
+        actor = R2EEnvActor.options(
+            lifetime="detached"  # 或按需
+        ).remote(ds, cmd_files)
+        # 等待 actor.reset() 完成，确保就绪
+        await actor.ready.remote() if hasattr(actor, "ready") else asyncio.sleep(0)
+        return actor
+    
+    async def aget_observations(
+        self, trajectory_ids, actions, extra_fields
+    ):
+        sem = asyncio.Semaphore(self.num_workers)      # 并发上限
 
-        # 2) Decide whether we are rendering the first page or taking a step.
-        fut = (
-            actor.start_env.remote()
-            if action is None or action == ""
-            else actor.step_env.remote(action)
+        async def _task(i):
+            async with sem:
+                act = ( "<compute_reward>sandbox_r2e</compute_reward>"
+                        if extra_fields[i].get("is_last_step")
+                        else actions[i] )
+                try:
+                    return i, *await self.aconduct_action(
+                        trajectory_ids[i], act, extra_fields[i]
+                    ), None
+                except Exception as e:
+                    return i, "", False, False, e
+
+        coros = [_task(i) for i in range(len(trajectory_ids))]
+        results = await asyncio.gather(*coros, return_exceptions=False)
+
+        # 初始化
+        n = len(trajectory_ids)
+        obs, dones, valids = [""] * n, [False] * n, [True] * n
+
+        # 处理结果
+        for i, o, d, v, err in results:
+            obs[i], dones[i], valids[i] = o, d, v
+            if err:
+                print(f"[ERROR] trajectory_id={trajectory_ids[i]}: {err}")
+
+        # 清理 last-step 或 done 的环境
+        cleanups = [
+            self.adelete_env(tid)
+            for tid, done, extra in zip(trajectory_ids, dones, extra_fields)
+            if done or extra.get("is_last_step")
+        ]
+        if cleanups:
+            # await asyncio.gather(
+            #     *[asyncio.to_thread(c) for c in cleanups], return_exceptions=True
+            # )
+            await asyncio.gather(*cleanups, return_exceptions=True)
+
+        return obs, dones, valids
+
+    def conduct_action(self, trajectory_id, action, extra_field):
+        return asyncio.run(
+            self.aconduct_action(trajectory_id, action, extra_field)
         )
 
-        # 3) Wait for the Ray RPC to finish with 300s timeout
-        try:
-            result = ray.get(fut, timeout=300)  # 300秒超时
-            if isinstance(result, tuple):           # step_env
-                obs, done, valid = result
-            else:                                   # start_env
-                obs, done, valid = result, False, True
-        except ray.exceptions.GetTimeoutError:
-            # 超时处理 - 返回指定的值
-            print(f"Action timeout after 600 seconds for trajectory_id: {trajectory_id}, action: {action}")
-            return "[TIMEOUT] (conduct_action) <reward>0.0</reward>", True, True
-        except Exception as e:
-            # 其他异常处理
-            print(f"Error in conduct_action for trajectory_id: {trajectory_id}, error: {e}")
-            return f"Error: {str(e)}", False, False
-
-        # 4) Refresh LRU order *after* the step.
-        if trajectory_id in self.actor_creation_order:
-            self.actor_creation_order.remove(trajectory_id)
-        self.actor_creation_order.append(trajectory_id)
-
-        # 5) Handle invalid actions
-        if not valid:
-            obs = f"The action {action} is invalid, please retry, obs is {obs}"
-
-        return obs, done, valid
-
     def get_observations(self, trajectory_ids, actions, extra_fields):
-        """
-        Batched version with proper timeout handling for individual tasks
-        """
-        from concurrent.futures import wait, FIRST_COMPLETED, ALL_COMPLETED
-        
-        n = len(trajectory_ids)
-        observations = [""] * n
-        dones = [False] * n
-        valid_flags = [True] * n
-
-        actions_with_last_step = []
-        for i in range(len(trajectory_ids)):
-            if extra_fields[i].get('is_last_step', False):
-                actions_with_last_step.append("<compute_reward>sandbox_r2e</compute_reward>")
-            else:
-                actions_with_last_step.append(actions[i])
-
-        def _worker(idx: int):
-            tid = trajectory_ids[idx]
-            act = actions_with_last_step[idx]
-            extra = extra_fields[idx].get("extra_fields", extra_fields[idx])
-            try:
-                return idx, *self.conduct_action(tid, act, extra), None
-            except Exception as e:
-                return idx, "", False, False, e
-
-        # print(f"Checkpoint 1, Start to conduct action")
-        
-        with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
-            # Create all futures
-            future_to_idx = {pool.submit(_worker, i): i for i in range(n)}
-            
-            # Wait for all futures with a timeout
-            # 给一个合理的总超时时间（比单个超时稍长）
-            done_futures, pending_futures = wait(
-                future_to_idx.keys(), 
-                timeout=max(400, n * 10),  # 比单个超时(120s)稍长一点
-                return_when=ALL_COMPLETED
-            )
-            
-            # Process completed futures
-            for future in done_futures:
-                idx = future_to_idx[future]
-                try:
-                    idx, obs, done, valid, err = future.result()
-                    observations[idx] = obs
-                    dones[idx] = done
-                    valid_flags[idx] = valid
-                    if err:
-                        print(f"[ERROR] trajectory_id={trajectory_ids[idx]}: {err}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to get result for idx={idx}: {e}")
-                    observations[idx] = f"[ERROR] (get_observations) {str(e)} <reward>0.0</reward>"
-                    dones[idx] = True
-                    valid_flags[idx] = True
-            
-            # Handle pending futures (timed out)
-            for future in pending_futures:
-                idx = future_to_idx[future]
-                print(f"[TIMEOUT] Future timed out for trajectory_id={trajectory_ids[idx]}")
-                future.cancel()  # Try to cancel
-                observations[idx] = "[TIMEOUT] (get_observations) <reward>0.0</reward>"
-                dones[idx] = True
-                valid_flags[idx] = True
-
-        # print(f"Checkpoint 2, Start to delete env")
-        # print(f"observations: {observations}, dones: {dones}, valid_flags: {valid_flags}")
-
-        # Delete environments with timeout
-        def _delete_env_if_needed(i):
-            if extra_fields[i].get('is_last_step', False) or dones[i]:
-                try:
-                    self.delete_env(trajectory_ids[i])
-                except Exception as e:
-                    print(f"Error deleting env for {trajectory_ids[i]}: {e}")
-        
-        with ThreadPoolExecutor(max_workers=self.num_workers) as pool:
-            # Submit all delete tasks
-            delete_futures = [pool.submit(_delete_env_if_needed, i) for i in range(n)]
-            # Wait with timeout
-            done_deletes, pending_deletes = wait(delete_futures, timeout=max(120, n))
-            
-            # Cancel any pending deletes
-            for future in pending_deletes:
-                future.cancel()
-                print("Some environment cleanup tasks timed out")
-
-        # print(f"Checkpoint 3, Start to return observations")
-        return observations, dones, valid_flags
-
-
-    def _cleanup_actors_if_needed(self):
-        """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 1024:
-            # raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
-            oldest = self.actor_creation_order.pop(0)
-            print(f"[INFO] Deleting actor {oldest} due to too many actors.")
-            self.delete_env(oldest)
+        return asyncio.run(
+            self.aget_observations(trajectory_ids, actions, extra_fields)
+        )

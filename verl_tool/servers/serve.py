@@ -2,7 +2,7 @@
 Tool Server - A FastAPI server to manage and execute tools based on incoming requests.
 Using asyncio for concurrent processing.
 """
-import asyncio
+import asyncio, inspect
 import json
 import logging
 from datetime import datetime
@@ -275,12 +275,30 @@ class AsyncToolManager:
             
             # Create task for tool processing
             # We use asyncio.to_thread for potentially blocking operations
-            task = asyncio.to_thread(
-                tool.get_observations,
-                tool_trajectory_ids, 
-                tool_actions, 
-                tool_extra_fields
-            )
+            # task = asyncio.to_thread(
+            #     tool.get_observations,
+            #     tool_trajectory_ids, 
+            #     tool_actions, 
+            #     tool_extra_fields
+            # )
+            # 若工具实现了 async 版本 (aget_observations)，直接 await；
+            # 否则退回线程池跑同步版本，避免阻塞事件循环。
+            if hasattr(tool, "aget_observations") and \
+               inspect.iscoroutinefunction(tool.aget_observations):
+                task = asyncio.create_task(
+                    tool.aget_observations(
+                        tool_trajectory_ids,
+                        tool_actions,
+                        tool_extra_fields,
+                    )
+                )
+            else:
+                task = asyncio.to_thread(
+                    tool.get_observations,
+                    tool_trajectory_ids,
+                    tool_actions,
+                    tool_extra_fields,
+                )
             tasks.append((tool_type, task))
         
         # Process all non-matching actions

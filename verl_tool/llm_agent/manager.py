@@ -460,16 +460,17 @@ class AgentActorManager:
         active_mask &= new_conditions
         return active_mask.sum().item()  # Return count for logging
 
-    # async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
-    #     """Run main LLM generation loop."""
+    async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
+        """Run main LLM generation loop."""
     # ------------------------------------------------------------------ #
     # 1) 原实现整体搬到这个私有方法，内容保持不变
     # # ------------------------------------------------------------------ #
-    async def _run_llm_loop_async_core(
-        self,
-        gen_batch: DataProto,
-        **sampling_params: Dict[str, Any],
-    ) -> Tuple[Dict, Dict]:
+    # async def _run_llm_loop_async_core(
+    #     self,
+    #     gen_batch: DataProto,
+    #     **sampling_params: Dict[str, Any],
+    # ) -> Tuple[Dict, Dict]:
+        start_time = time.time()
         """(Unchanged) original guts of `run_llm_loop_async`."""
         perf_timer = PerformanceTimer(do_timer=False)
         perf_timer.start('run_llm_loop_total')
@@ -589,139 +590,136 @@ class AgentActorManager:
 
         # Main generation loop
         perf_timer.start('main_generation_loop')
+        timeout_exception_mask = None
         for step in range(self.config.max_turns+1):
             if not active_mask.any():
                 break
+            current_time = time.time()
+            timeout_flag = False
+            if current_time - start_time > 1200: # 20 min timeout, TODO: make it configurable
+                # Drop all timeout trajectories
+                logger.error(f"[run_llm_loop_async] timeout – {current_time - start_time}s, traj_ids: {traj_ids}")
+                timeout_exception_mask = active_mask.clone() # Current active
+                timeout_flag = True
+                # Run another round to terminate the timeout environment
+            try:
+                step_timer_key = f'step_{step}'
+                perf_timer.start(step_timer_key)
+                perf_timer.start(f'step_{step}_preparation')
 
-            step_timer_key = f'step_{step}'
-            perf_timer.start(step_timer_key)
-            perf_timer.start(f'step_{step}_preparation')
+                logger.info(f"Action step {step}/{self.config.max_turns}")
+                rollings.batch = self.tensor_fn.cut_to_effective_len(
+                    rollings.batch,
+                    keys=['input_ids', 'attention_mask', 'position_ids']
+                ) # TODO: delete
+                # with open("/minimax-dialogue/users/ruobai/rl_r2e/rollings_batch_1.pkl", "wb") as f:
+                #     pickle.dump(rollings, f)
+                rollings_active = DataProto.from_dict(
+                    {k: v[active_mask] for k, v in rollings.batch.items()},
+                    {k: v[active_mask.numpy()] for k, v in rollings.non_tensor_batch.items()},
+                    meta_info=ori_meta_info
+                )
+                # with open("/minimax-dialogue/users/ruobai/rl_r2e/rollings_active_batch_1.pkl", "wb") as f:
+                #     pickle.dump(rollings_active, f)
+                if (step == self.config.max_turns or timeout_flag) and self.config.force_finish_for_last_turn:
+                    # remove the action stop tokens in the last turn to force a finish
+                    agent_sampling_params.pop('stop')
+                
+                perf_timer.end(f'step_{step}_preparation')
+                
+                # Time the generation
+                perf_timer.start(f'step_{step}_generation')
+                # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch2.pkl", "wb") as f:
+                #     pickle.dump(rollings_active, f)
+                gen_output = await self.generate_sequences(rollings_active, **agent_sampling_params) # [active_size, response_length]
+                # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch3.pkl", "wb") as f:
+                #     pickle.dump(gen_output, f)
+                # exit(1)
+                perf_timer.end(f'step_{step}_generation')
 
-            logger.info(f"Action step {step}/{self.config.max_turns}")
-            rollings.batch = self.tensor_fn.cut_to_effective_len(
-                rollings.batch,
-                keys=['input_ids', 'attention_mask', 'position_ids']
-            ) # TODO: delete
-            # with open("/minimax-dialogue/users/ruobai/rl_r2e/rollings_batch_1.pkl", "wb") as f:
-            #     pickle.dump(rollings, f)
-            rollings_active = DataProto.from_dict(
-                {k: v[active_mask] for k, v in rollings.batch.items()},
-                {k: v[active_mask.numpy()] for k, v in rollings.non_tensor_batch.items()},
-                meta_info=ori_meta_info
-            )
-            # with open("/minimax-dialogue/users/ruobai/rl_r2e/rollings_active_batch_1.pkl", "wb") as f:
-            #     pickle.dump(rollings_active, f)
-            if step == self.config.max_turns and self.config.force_finish_for_last_turn:
-                # remove the action stop tokens in the last turn to force a finish
-                agent_sampling_params.pop('stop')
-            
-            perf_timer.end(f'step_{step}_preparation')
-            
-            # Time the generation
-            perf_timer.start(f'step_{step}_generation')
-            # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch2.pkl", "wb") as f:
-            #     pickle.dump(rollings_active, f)
-            gen_output = await self.generate_sequences(rollings_active, **agent_sampling_params) # [active_size, response_length]
-            # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch3.pkl", "wb") as f:
-            #     pickle.dump(gen_output, f)
-            # exit(1)
-            perf_timer.end(f'step_{step}_generation')
+                # Time the postprocessing
+                perf_timer.start(f'step_{step}_postprocess')
+                responses_ids, responses_str, do_actions = await self._postprocess_responses(gen_output.batch['responses'], step) # [active_size, ...]
+                responses_ids, _ = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask) # [bs*n, response_length]
+                perf_timer.end(f'step_{step}_postprocess')
 
-            # Time the postprocessing
-            perf_timer.start(f'step_{step}_postprocess')
-            responses_ids, responses_str, do_actions = await self._postprocess_responses(gen_output.batch['responses'], step) # [active_size, ...]
-            responses_ids, _ = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask) # [bs*n, response_length]
-            perf_timer.end(f'step_{step}_postprocess')
+                logger.info(f"Number of active trajectories: {active_mask.sum().item()}")
+                logger.info(f"Length of responses: {responses_ids.shape[1]}")
 
-            logger.info(f"Number of active trajectories: {active_mask.sum().item()}")
-            logger.info(f"Length of responses: {responses_ids.shape[1]}")
+                perf_timer.start(f'step_{step}_action_length_tracking')
+                async with self.tokenizer_lock:
+                    idx = 0
+                    for i, active in enumerate(active_mask):
+                        if active:
+                            action_length = len(self.tokenizer.encode(responses_str[idx], add_special_tokens=False))
+                            turns_stats_extra["action_lengths"][i].append(action_length)
+                            idx += 1
+                        else:
+                            turns_stats_extra["action_lengths"][i].append(0)
+                perf_timer.end(f'step_{step}_action_length_tracking')
 
-            perf_timer.start(f'step_{step}_action_length_tracking')
-            async with self.tokenizer_lock:
-                idx = 0
+                # Execute in environment and process observations
+                perf_timer.start(f'step_{step}_tool_interaction')
+                active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
+                next_obs, dones, valid_action, finishs, rewards, tool_interact_info = await self.interact_with_tool_server(
+                    active_uids, responses_str, do_actions, active_mask,
+                    extra_fields=rollings_active.non_tensor_batch.get('extra_info', None),
+                    is_last_step=(step == self.config.max_turns) or timeout_flag
+                )
+                for i, reward in enumerate(rewards):
+                    if rewards[i] is not None and active_mask[i]:
+                        turns_stats_extra["rewards"][i].append(reward)
+                    turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
+                perf_timer.end(f'step_{step}_tool_interaction')
                 for i, active in enumerate(active_mask):
                     if active:
-                        action_length = len(self.tokenizer.encode(responses_str[idx], add_special_tokens=False))
-                        turns_stats_extra["action_lengths"][i].append(action_length)
-                        idx += 1
+                        turns_stats_extra["last_obs"][i] = f"[Step {step}] " + next_obs[i]
+
+                perf_timer.start(f'step_{step}_state_updates')
+                curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
+                self._update_active_mask_inplace(active_mask, curr_active_mask)
+                turns_stats[curr_active_mask] += 1
+                valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
+
+                next_obs_ids = await self._process_next_obs(next_obs, dones, valid_action, finishs) # [active_size, obs_length]
+
+                obs_idx = 0
+                for i, active in enumerate(active_mask):
+                    if i >= len(turns_stats_extra["obs_lengths"]):
+                        break
+                    if active:
+                        obs_length = next_obs_ids[obs_idx].shape[0]
+                        turns_stats_extra["obs_lengths"][i].append(int(obs_length))
+                        obs_idx += 1 
                     else:
-                        turns_stats_extra["action_lengths"][i].append(0)
-            perf_timer.end(f'step_{step}_action_length_tracking')
+                        turns_stats_extra["obs_lengths"][i].append(0)
 
-            # Execute in environment and process observations
-            perf_timer.start(f'step_{step}_tool_interaction')
-            active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
-            next_obs, dones, valid_action, finishs, rewards, tool_interact_info = await self.interact_with_tool_server(
-                active_uids, responses_str, do_actions, active_mask,
-                extra_fields=rollings_active.non_tensor_batch.get('extra_info', None),
-                is_last_step=(step == self.config.max_turns)
-            )
-            for i, reward in enumerate(rewards):
-                if rewards[i] is not None and active_mask[i]:
-                    turns_stats_extra["rewards"][i].append(reward)
-                turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
-            perf_timer.end(f'step_{step}_tool_interaction')
-            # obs_idx = 0
-            # if step > 1:
-            #     print("--------------------------------")
-            #     print(f"len(active_uids): {len(active_uids)}, len(responses_str): {len(responses_str)}, len(do_actions): {len(do_actions)}, len(active_mask): {len(active_mask)}")
-            #     print(f"len(next_obs): {len(next_obs)}, len(dones): {len(dones)}, len(valid_action): {len(valid_action)}, len(finishs): {len(finishs)}")
-            #     # print("================================")
-            #     # print(f"active_mask: {active_mask}")
-            #     # print(f"next_obs: {next_obs}")
-            #     # print(f"dones: {dones}")
-            #     # print(f"valid_action: {valid_action}")
-            #     # print(f"finishs: {finishs}")
-            #     # print(f"responses_str: {responses_str}")
-            #     # print(f"do_actions: {do_actions}")
-            #     # print(turns_stats_extra["last_obs"])
-            #     print("--------------------------------")
-            for i, active in enumerate(active_mask):
-                if active:
-                    # if step == 30:
-                    #     print(f"i: {i}, active: {active}, obs_idx: {obs_idx}, next_obs: {next_obs[obs_idx]}")
-                    turns_stats_extra["last_obs"][i] = f"[Step {step}] " + next_obs[i]
-                    # obs_idx += 1
-            # if step == 30:
-            #     print(turns_stats_extra["last_obs"])
-            #     print("--------------------------------"*20)
+                # Update states
+                rollings, available_context_budget = self._update_rolling_state(
+                    original_left_side,
+                    rollings,
+                    responses_ids,
+                    next_obs_ids
+                )
+                original_right_side = self._update_right_side(
+                    original_right_side,
+                    responses_ids,
+                    next_obs_ids
+                )
+                available_context_budget = min(available_context_budget, self.config.max_action_length)
+                agent_sampling_params['max_tokens'] = available_context_budget # for vllm
+                agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
 
-            perf_timer.start(f'step_{step}_state_updates')
-            curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-            self._update_active_mask_inplace(active_mask, curr_active_mask)
-            turns_stats[curr_active_mask] += 1
-            valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
-
-            next_obs_ids = await self._process_next_obs(next_obs, dones, valid_action, finishs) # [active_size, obs_length]
-
-            obs_idx = 0
-            for i, active in enumerate(active_mask):
-                if i >= len(turns_stats_extra["obs_lengths"]):
+                # TODO: if timeout, we should not update the active_mask, but we should still update the other states
+                if timeout_flag:
                     break
-                if active:
-                    obs_length = next_obs_ids[obs_idx].shape[0]
-                    turns_stats_extra["obs_lengths"][i].append(int(obs_length))
-                    obs_idx += 1 
-                else:
-                    turns_stats_extra["obs_lengths"][i].append(0)
-
-            # Update states
-            rollings, available_context_budget = self._update_rolling_state(
-                original_left_side,
-                rollings,
-                responses_ids,
-                next_obs_ids
-            )
-            original_right_side = self._update_right_side(
-                original_right_side,
-                responses_ids,
-                next_obs_ids
-            )
-            available_context_budget = min(available_context_budget, self.config.max_action_length)
-            agent_sampling_params['max_tokens'] = available_context_budget # for vllm
-            agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
-            perf_timer.end(f'step_{step}_state_updates')
-            perf_timer.end(step_timer_key)
+            except Exception as e:
+                logger.error(f"[run_llm_loop_async] aborted – {repr(e)}, traj_ids: {traj_ids}")
+                timeout_exception_mask = active_mask.clone() # Current active
+                break
+            finally:
+                perf_timer.end(f'step_{step}_state_updates')
+                perf_timer.end(step_timer_key)
 
         perf_timer.end('main_generation_loop')
 
@@ -741,7 +739,7 @@ class AgentActorManager:
 
         logger.info(f"ACTIVE_TRAJ_NUM: {active_num_list}")
 
-        results = self._compose_final_output(original_left_side, original_right_side, non_tensors, ori_meta_info)
+        results = self._compose_final_output(original_left_side, original_right_side, non_tensors, ori_meta_info, timeout_exception_mask=timeout_exception_mask)
         perf_timer.end('final_composition')
         
         perf_timer.end('run_llm_loop_total')
@@ -753,81 +751,6 @@ class AgentActorManager:
         #     pickle.dump(results, f)
         return results
     
-
-    # ------------------------------------------------------------------ #
-    # 2) 新包装器：10 分钟超时 & 错误->overlong 处理
-    # ------------------------------------------------------------------ #
-    async def run_llm_loop_async(
-        self,
-        gen_batch: DataProto,
-        **sampling_params: Dict[str, Any],
-    ) -> Tuple[Dict, Dict]:
-        """
-        Wrapper around `_run_llm_loop_async_core` that
-        1) enforces a 10-minute wall-clock timeout;
-        2) logs any exception/timeout;
-        3) returns an all-masked DataProto so downstream training skips it.
-        """
-        try:
-            # raise Exception("test")
-            gen_output = await asyncio.wait_for(
-                self._run_llm_loop_async_core(gen_batch, **sampling_params),
-                timeout=600,  # 20 min
-            )
-            # with open(f"/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_normal_{int(time.time()*1e6)}.pkl", "wb") as f:
-            #     pickle.dump(gen_output, f)
-            return gen_output
-        except Exception as e:  # asyncio.TimeoutError included
-            results = self._make_fallback_dataproto(gen_batch, reason=str(e))
-            return results
-
-    def _make_fallback_dataproto(self, gen_batch: DataProto, *, reason: str) -> Tuple[Dict, Dict]:
-        """Return a minimal DataProto so downstream trainer can skip."""
-        # with open(f"/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_before_exception_{int(time.time()*1e6)}.pkl", "wb") as f:
-        #     pickle.dump(gen_batch, f)
-
-        bs = gen_batch.batch["input_ids"].size(0)
-
-        # 左侧 prompt（沿用起始 window）
-        initial_input_ids = gen_batch.batch["input_ids"][:, -self.config.max_start_length :].clone()
-        left_side = {"input_ids": initial_input_ids}
-
-        # 右侧响应：全空
-        dummy_resp = initial_input_ids[:, []]  # shape (bs, 0)
-        right_side = {
-            "responses": dummy_resp,
-            "responses_with_loss_mask": dummy_resp,
-        }
-
-        non_tensors = {
-            "traj_ids": gen_batch.non_tensor_batch["traj_ids"].tolist(),
-            "action_lengths": [[0] for _ in range(bs)],
-            "obs_lengths":   [[0] for _ in range(bs)],
-            "last_obs":      ["<reward>0.0</reward>" for _ in range(bs)],
-            "turn_rewards":  [[0.0] for _ in range(bs)],
-            "tool_interact_info": [[0] for _ in range(bs)],
-            "extra_info": gen_batch.non_tensor_batch.get("extra_info", [{}] * bs),
-            # 统计字段给零
-            "turns_stats":       [0] * bs,
-            "valid_action_stats":[0] * bs,
-            "active_mask":       [False] * bs,
-            # 把 reason 变成 batch-size list，保证长度对齐
-            "reason": [reason] * bs,
-        }
-
-        fallback = self._compose_final_output(
-            left_side, right_side, non_tensors, gen_batch.meta_info, is_exception=True
-        )
-
-        # 方便事后排查
-        with open(
-            f"/minimax-dialogue/users/ruobai/rl_r2e/pkl_cache/async_batch_exception_{reason}_{int(time.time()*1e6)}.pkl",
-            "wb",
-        ) as f:
-            pickle.dump({"gen_batch": gen_batch, "fallback": fallback}, f)
-
-        return fallback
-    
     def run_llm_loop(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         return asyncio.run(self.run_llm_loop_async(gen_batch, **sampling_params))
 
@@ -837,7 +760,8 @@ class AgentActorManager:
         right_side: Dict,
         non_tensors: Dict,
         meta_info: Dict,
-        is_exception: bool = False
+        # is_exception: bool = False
+        timeout_exception_mask: torch.Tensor = None
     ) -> Tuple[Dict, Dict]:
         """
         Compose the final output of the rollout by merging prompt and response
@@ -912,8 +836,9 @@ class AgentActorManager:
         if self.config.mask_overlong_loss: # or is_exception: mask should on overlong_mask option
             # set loss_mask to 0 for those overlong trajectories
             effective_lens = self.tensor_fn.create_attention_mask(final_output['responses']).sum(dim=1)
-            if is_exception:
-                overlong_mask = torch.ones_like(effective_lens, dtype=torch.bool)
+            if timeout_exception_mask is not None:
+                # overlong_mask = torch.ones_like(effective_lens, dtype=torch.bool)
+                overlong_mask = timeout_exception_mask | (effective_lens >= self.config.max_response_length)
             else:
                 overlong_mask = effective_lens >= self.config.max_response_length
             final_output['loss_mask'][overlong_mask] = 0
