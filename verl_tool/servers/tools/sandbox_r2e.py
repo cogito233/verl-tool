@@ -236,47 +236,6 @@ class SandboxR2ETool(BaseTool):
                 self.actor_creation_order.remove(trajectory_id)
             self.actor_creation_order.append(trajectory_id)
 
-    # def delete_env(self, trajectory_id):
-    #     if trajectory_id in self.env_actors:
-    #         try:
-    #             future = self.env_actors[trajectory_id].close_env.remote()
-    #             # 添加超时，比如10秒
-    #             ray.get(future, timeout=60)
-    #         except ray.exceptions.GetTimeoutError:
-    #             print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
-    #         except Exception as e:
-    #             print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
-            
-    #         # 无论是否超时，都强制kill
-    #         try:
-    #             ray.kill(self.env_actors[trajectory_id], no_restart=True)
-    #         except Exception as e:
-    #             print(f"Error killing actor for trajectory_id: {trajectory_id}: {e}")
-            
-    #         if trajectory_id in self.env_actors:
-    #             del self.env_actors[trajectory_id]
-        
-    #     if trajectory_id in self.actor_creation_order:
-    #         self.actor_creation_order.remove(trajectory_id)
-
-    async def adelete_env(self, trajectory_id):
-        if trajectory_id in self.env_actors:
-            try:
-                fut = self.env_actors[trajectory_id].close_env.remote()
-                # 把阻塞的 ray.get 换成真正的 await
-                try:
-                    await asyncio.wait_for(fut, timeout=60)
-                except asyncio.TimeoutError:
-                    print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
-            except Exception as e:
-                 print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
-
-            if trajectory_id in self.env_actors:
-                 del self.env_actors[trajectory_id]
-         
-        if trajectory_id in self.actor_creation_order:
-            self.actor_creation_order.remove(trajectory_id)
-
     # ---- 兼容旧的同步调用路径 ----
     def delete_env(self, trajectory_id):
         """Sync wrapper kept for legacy code paths."""
@@ -313,21 +272,35 @@ class SandboxR2ETool(BaseTool):
 
     def _cleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 1024:
-            raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
-            # Not Implemented for Async
+        while len(self.env_actors) > 512:
+            # 实际清理而不是抛出异常
+            if not self.actor_creation_order:
+                break
             oldest = self.actor_creation_order.pop(0)
             print(f"[INFO] Deleting actor {oldest} due to too many actors.")
-            self.delete_env(oldest)
+            try:
+                self.delete_env(oldest)
+            except Exception as e:
+                print(f"[ERROR] Failed to delete actor {oldest}: {e}")
+                # 即使清理失败也要从字典中移除引用
+                if oldest in self.env_actors:
+                    del self.env_actors[oldest]
 
     async def _acleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 1024:
-            raise RuntimeError("Too many actors, please reduce the number of concurrent requests.")
-            # Not Implemented for Async
+        while len(self.env_actors) > 512:
+            # 实际清理而不是抛出异常
+            if not self.actor_creation_order:
+                break
             oldest = self.actor_creation_order.pop(0)
             print(f"[INFO] Deleting actor {oldest} due to too many actors.")
-            await self.adelete_env(oldest)
+            try:
+                await self.adelete_env(oldest)
+            except Exception as e:
+                print(f"[ERROR] Failed to delete actor {oldest}: {e}")
+                # 即使清理失败也要从字典中移除引用
+                if oldest in self.env_actors:
+                    del self.env_actors[oldest]
 
     async def aconduct_action(
         self, trajectory_id: str, action: str, extra_field: dict
@@ -382,13 +355,38 @@ class SandboxR2ETool(BaseTool):
             lifetime="detached"  # 或按需
         ).remote(ds, cmd_files)
         # 等待 actor.reset() 完成，确保就绪
-        await actor.ready.remote() if hasattr(actor, "ready") else asyncio.sleep(0)
+        await (actor.ready.remote() if hasattr(actor, "ready") else asyncio.sleep(0))
         return actor
     
+    async def adelete_env(self, trajectory_id):
+        if trajectory_id in self.env_actors:
+            actor = self.env_actors[trajectory_id]
+            try:
+                fut = actor.close_env.remote()
+                try:
+                    await asyncio.wait_for(fut, timeout=60)
+                except asyncio.TimeoutError:
+                    print(f"close_env timeout for trajectory_id: {trajectory_id}, forcing kill")
+            except Exception as e:
+                print(f"Error closing env for trajectory_id: {trajectory_id}: {e}")
+            
+            # 强制kill actor并清理引用
+            try:
+                ray.kill(actor, no_restart=True)
+            except Exception as e:
+                print(f"Error killing actor for trajectory_id: {trajectory_id}: {e}")
+            
+            # 无论如何都要清理引用
+            if trajectory_id in self.env_actors:
+                del self.env_actors[trajectory_id]
+         
+        if trajectory_id in self.actor_creation_order:
+            self.actor_creation_order.remove(trajectory_id)
+
     async def aget_observations(
         self, trajectory_ids, actions, extra_fields
     ):
-        sem = asyncio.Semaphore(self.num_workers)      # 并发上限
+        sem = asyncio.Semaphore(self.num_workers)
 
         async def _task(i):
             async with sem:
@@ -400,6 +398,11 @@ class SandboxR2ETool(BaseTool):
                         trajectory_ids[i], act, extra_fields[i]
                     ), None
                 except Exception as e:
+                    # 异常情况下也要清理环境
+                    try:
+                        await self.adelete_env(trajectory_ids[i])
+                    except Exception as cleanup_e:
+                        print(f"[ERROR] Cleanup failed for {trajectory_ids[i]}: {cleanup_e}")
                     return i, "", False, False, e
 
         coros = [_task(i) for i in range(len(trajectory_ids))]
@@ -422,12 +425,10 @@ class SandboxR2ETool(BaseTool):
             if done or extra.get("is_last_step")
         ]
         if cleanups:
-            # await asyncio.gather(
-            #     *[asyncio.to_thread(c) for c in cleanups], return_exceptions=True
-            # )
             await asyncio.gather(*cleanups, return_exceptions=True)
 
         return obs, dones, valids
+    
 
     def conduct_action(self, trajectory_id, action, extra_field):
         return asyncio.run(

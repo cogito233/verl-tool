@@ -1,9 +1,12 @@
 # ray stop
 # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --head --dashboard-host=0.0.0.0 
-source .venv-server/bin/activate
+source .venv-server-roshan3/bin/activate
 export WANDB_ENTITY=zhihenglyu-cs
 export NCCL_DEBUG=INFO
 export VLLM_USE_V1=1
+export HYDRA_FULL_ERROR=1
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 set -x
 # dataset_name=r2e_swe_debug
@@ -12,7 +15,7 @@ dataset_name=r2e_lite_user
 train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
 val_data=/root/code/rl_r2e/data/r2e_swe_verified_user/test.parquet
 model_name=QWen2.5-32B-sft-v1
-model_path=/minimax-dialogue/users/qianhong/code/m2/LLaMA-Factory/saves/v1/exp1
+model_path=/data/minimax-dialogue/users/qianhong/code/m2/LLaMA-Factory/saves/rl/exp1
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=8
 n_nodes=4
@@ -21,14 +24,14 @@ enable_agent=True # enable agent for tool use
 # n=8
 # batch_size=32
 n=8
-batch_size=64
+batch_size=32
 
-ppo_mini_batch_size=64
+ppo_mini_batch_size=32
 max_prompt_length=10240
-# max_response_length=22527 
-# max_model_length=32768
-max_response_length=30720 
-max_model_length=40961
+max_response_length=22527 
+max_model_length=32768
+# max_response_length=30720 
+# max_model_length=40961
 max_obs_length=4096
 temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
@@ -56,9 +59,8 @@ fsdp_size=-1
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0709-main-bs512"
+run_name="${model_pretty_name}-${dataset_name}-0711-main-vllm-debug"
 export VERL_RUN_ID=$run_name
-export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # host=localhost
 host=$(hostname -I | awk '{print $1}')
@@ -89,6 +91,9 @@ ray job submit --address="http://127.0.0.1:8265" \
     reward_model.reward_manager=r2eswe \
     actor_rollout_ref.model.path=$model_path \
     actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.actor.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.optim.lr=$actor_lr \
     actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$mirco_batch_size \
@@ -100,7 +105,9 @@ ray job submit --address="http://127.0.0.1:8265" \
     +actor_rollout_ref.agent.tool_server_url=$tool_server_url \
     actor_rollout_ref.agent.max_prompt_length=$max_prompt_length \
     actor_rollout_ref.agent.max_response_length=$max_response_length \
-    +actor_rollout_ref.agent.max_concurrent_trajectories=128 \
+    +actor_rollout_ref.agent.max_concurrent_trajectories=256 \
+    +actor_rollout_ref.actor.max_concurrent_trajectories=256 \
+    actor_rollout_ref.rollout.max_num_seqs=512 \
     +actor_rollout_ref.agent.max_model_length=$max_model_length \
     actor_rollout_ref.agent.max_start_length=$max_start_length \
     actor_rollout_ref.agent.max_obs_length=$max_obs_length \
@@ -118,7 +125,7 @@ ray job submit --address="http://127.0.0.1:8265" \
     actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.95 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.temperature=$temperature \
     actor_rollout_ref.rollout.top_k=-1 \
     actor_rollout_ref.rollout.n=$n \
@@ -135,7 +142,7 @@ ray job submit --address="http://127.0.0.1:8265" \
     trainer.logger=['console','wandb'] \
     trainer.project_name='r2e_swe' \
     trainer.experiment_name=$run_name \
-    trainer.val_before_train=True \
+    trainer.val_before_train=False \
     trainer.default_hdfs_dir=null \
     trainer.default_local_dir=$(pwd)/checkpoints/r2eswe/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
