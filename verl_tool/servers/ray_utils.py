@@ -39,6 +39,11 @@ def ray_execute(tool, trajectory_id: str, action: str, extra_field: Dict[str, An
     """
     return tool.conduct_action(trajectory_id, action, extra_field)
 
+
+@ray.remote(num_cpus=0)
+def _non_tool_action(done_if_invalid: bool):
+    return ("", True, False) if done_if_invalid else ("", False, False)
+
 class RayToolManager:
     """Tool manager that uses Ray for distributed execution"""
     
@@ -141,22 +146,15 @@ class RayToolManager:
             tuple: (observations, dones, valids) lists for all actions
         """
         # Identify tool types for actions
-        tool_types = []
-        for i in range(len(actions)):
-            tool_type = await self.identify_tool_for_action(actions[i], extra_fields[i])
-            tool_types.append(tool_type)
+        tool_types = await asyncio.gather(
+            *[self.identify_tool_for_action(a, e)
+              for a, e in zip(actions, extra_fields)]
+        )
             
         # Prepare results
         observations = [None] * len(actions)
         dones = [False] * len(actions)
         valids = [False] * len(actions)
-        
-        @ray.remote(num_cpus=0)
-        def non_tool_action(trajectory_id: str, action: str, extra_field: Dict[str, Any]):
-            if self.done_if_invalid:
-                return "", True, False
-            else:
-                return "", False, False # no observation if no tool matched, [obs, done, valid]
         
         pending_refs = []
         for i, tool_type in enumerate(tool_types):
@@ -165,8 +163,8 @@ class RayToolManager:
             extra_field = extra_fields[i]
             
             if tool_type is None:
-                # Handle actions with no matching tool
-                result_ref = non_tool_action.remote(trajectory_id, action, extra_field)
+                # Handle actions with no matching tool\
+                result_ref = _non_tool_action.remote(self.done_if_invalid)
             else:
                 tool = self.tools[tool_type]
                 result_ref = ray_execute.remote(tool, trajectory_id, action, extra_field)
@@ -175,7 +173,7 @@ class RayToolManager:
         # Get results as they complete
         if pending_refs:
             # Use asyncio to wait for Ray tasks
-            results = [ray.get(ref) for ref in pending_refs]
+            results = await asyncio.gather(*pending_refs, return_exceptions=False)
             for i, result in enumerate(results):
                 observation, done, valid = result
                 observations[i] = observation

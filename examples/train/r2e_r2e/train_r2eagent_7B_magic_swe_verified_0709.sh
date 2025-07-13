@@ -1,10 +1,12 @@
 # ray stop
 # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --head --dashboard-host=0.0.0.0 
-source .venv-server/bin/activate
+source .venv-server-roshan3/bin/activate
 export WANDB_ENTITY=zhihenglyu-cs
 export NCCL_DEBUG=INFO
 export VLLM_USE_V1=1
 export HYDRA_FULL_ERROR=1
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 set -x
 # dataset_name=r2e_swe_debug
@@ -36,7 +38,7 @@ strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
 # token of each action, which are </answer> and </python> respectively
 
-# === begin, added by Zhiheng ===
+# === begin, added by Zhiheng === 
 rollout_mode='async'
 max_action_length=1536
 rolling_with_prompt=False
@@ -51,16 +53,15 @@ use_dynamic_bsz=True # faster
 enable_mtrl=True
 ulysses_sequence_parallel_size=1 # set to 1 for normal verl behavior, otherwise it will cause OOM
 do_offload=True
-fsdp_size=-1
+fsdp_size=2
 # === end, added by Zhiheng ===
 
 critic_lr=5e-7
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0709-magic-timeout"
+run_name="${model_pretty_name}-${dataset_name}-0711-roshan3"
 export VERL_RUN_ID=$run_name
-export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # host=localhost
 host=$(hostname -I | awk '{print $1}')
@@ -99,6 +100,9 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     actor_rollout_ref.agent.enable_mtrl=$enable_mtrl \
     +actor_rollout_ref.agent.tool_server_url=$tool_server_url \
     actor_rollout_ref.agent.max_prompt_length=$max_prompt_length \
+    +actor_rollout_ref.agent.max_concurrent_trajectories=256 \
+    +actor_rollout_ref.actor.max_concurrent_trajectories=256 \
+    actor_rollout_ref.rollout.max_num_seqs=1024 \
     actor_rollout_ref.agent.max_response_length=$max_response_length \
     +actor_rollout_ref.agent.max_model_length=$max_model_length \
     actor_rollout_ref.agent.max_start_length=$max_start_length \
@@ -120,7 +124,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.95 \
     actor_rollout_ref.rollout.max_model_len=$max_model_length \
     actor_rollout_ref.rollout.temperature=$temperature \
     actor_rollout_ref.rollout.top_k=-1 \
@@ -137,7 +141,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='r2e_swe' \
     trainer.experiment_name=$run_name \
-    trainer.val_before_train=True \
+    trainer.val_before_train=False \
     trainer.default_hdfs_dir=null \
     trainer.default_local_dir=$(pwd)/checkpoints/r2eswe/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \

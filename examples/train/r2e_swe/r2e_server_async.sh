@@ -1,6 +1,8 @@
-source .venv-server/bin/activate
-
+source .venv-server-roshan3/bin/activate
+export NCCL_DEBUG=INFO
 export VLLM_USE_V1=1
+export HYDRA_FULL_ERROR=1
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 ray stop
 ray start --head --dashboard-host=0.0.0.0
 

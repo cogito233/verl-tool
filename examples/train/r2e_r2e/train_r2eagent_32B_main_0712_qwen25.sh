@@ -14,8 +14,8 @@ dataset_name=r2e_lite_user
 # dataset_name=r2e_swe_extra_debug
 train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
 val_data=/root/code/rl_r2e/data/r2e_swe_verified_user/test.parquet
-model_name=R2EGym-32B-Agent
-model_path=/data/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-32B-Agent
+model_name=Qwen2.5-32B
+model_path=/data/minimax-dialogue/users/ruobai/cogito/base_model/Qwen2.5-32B
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=8
 n_nodes=4
@@ -24,14 +24,14 @@ enable_agent=True # enable agent for tool use
 # n=8
 # batch_size=32
 n=8
-batch_size=32
+batch_size=64
 
-ppo_mini_batch_size=32
+ppo_mini_batch_size=64
 max_prompt_length=10240
-max_response_length=22527 
-max_model_length=32768
-# max_response_length=30720 
-# max_model_length=40961
+# max_response_length=22527 
+# max_model_length=32768
+max_response_length=30720 
+max_model_length=40961
 max_obs_length=4096
 temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
@@ -53,13 +53,13 @@ use_dynamic_bsz=True # faster
 enable_mtrl=True
 ulysses_sequence_parallel_size=1 # set to 1 for normal verl behavior, otherwise it will cause OOM
 do_offload=True
-fsdp_size=-1
+fsdp_size=4
 # === end, added by Zhiheng ===
 
 actor_lr=1e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0712-main"
+run_name="${model_pretty_name}-${dataset_name}-0711-main-vllm-debug"
 export VERL_RUN_ID=$run_name
 
 # host=localhost
@@ -91,9 +91,6 @@ ray job submit --address="http://127.0.0.1:8265" \
     reward_model.reward_manager=r2eswe \
     actor_rollout_ref.model.path=$model_path \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.fsdp_config.param_offload=True \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.optim.lr=$actor_lr \
     actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$mirco_batch_size \
