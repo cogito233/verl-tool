@@ -327,6 +327,19 @@ class AsyncToolManager:
                 all_valids[result_idx] = valids[idx_pos]
                 
         self._save_call_record(trajectory_ids, actions, all_observations, all_dones, all_valids, extra_fields, tool_types)
+
+        # Save to file
+        data_hash_str = hash_requests({"trajectory_ids": trajectory_ids, "actions": actions, "extra_fields": extra_fields})
+        with open(f"/data/minimax-dialogue/users/ruobai/rl_r2e/server_tmp_requests/request_response_{data_hash_str}.json", "w") as f:
+            for i in range(len(trajectory_ids)):
+                f.write(json.dumps({
+                    "trajectory_id": trajectory_ids[i],
+                    "action": actions[i],
+                    "observation": all_observations[i],
+                    "done": all_dones[i],
+                    "valid": all_valids[i]
+                }, ensure_ascii=False) + "\n")
+        
         return all_observations, all_dones, all_valids
 
 

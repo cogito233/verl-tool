@@ -56,7 +56,7 @@ class R2ESWERewardManager:
         # print(f"####### State of save_record: {save_record}")
         # print(f"####### Path of __file__: {Path(__file__)}")
         # print(f"####### Path of __file__.parent.parent.parent.parent: {Path(__file__).parent.parent.parent.parent}")
-        curr_dir = "/minimax-dialogue/users/ruobai/rl_r2e" # Hardcode for now
+        curr_dir = "/data/minimax-dialogue/users/ruobai/rl_r2e" # Hardcode for now
         curr_dir = Path(curr_dir)
 
         if not hasattr(self, 'record_dir'):
@@ -222,6 +222,8 @@ class R2ESWERewardManager:
                 pickle.dump(data, f)
             print(f"Saved complete data to {temp_file}")
 
+        # exit(1) # For Debug Only
+
         if return_dict:
             return {
                 "reward_tensor": reward_tensor,
@@ -236,8 +238,8 @@ if __name__ == '__main__':
     import pickle
 
     # Load the saved data object from disk
-    with open("verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-16-29-40/step-31.pkl", "rb") as f:
-    # with open("verl_step_records/r2egym-32b-agent-r2e_lite-0630-bs256-2025-07-01-08-18-43/step-5.pkl", "rb") as f:
+    # with open("verl_step_records/qwen2.5-32b-sft-v1-r2e_lite_user-0711-main-vllm-debug-2025-07-13-05-41-39/step-val-60.pkl", "rb") as f:
+    with open("verl_step_records/qwen2.5-32b-sft-v1-r2e_lite_user-0715-main-vllm-2025-07-15-21-06-14/step-val-25.pkl", "rb") as f:
         dummy_data = pickle.load(f)
     print(dummy_data.batch.keys())
     print(dummy_data.non_tensor_batch.keys())

@@ -293,10 +293,9 @@ class AgentActorManager:
 
         return next_obs_ids
 
-    def _update_rolling_state(self, left_side, rollings, cur_responses: torch.Tensor,
-                              next_obs_ids: torch.Tensor) -> Dict:
+    async def _update_rolling_state(self, left_side, rollings, cur_responses: torch.Tensor,
+                              next_obs_ids: torch.Tensor, active_mask: torch.Tensor) -> Dict:
         """Update rolling state with new responses and observations."""
-
         # Concatenate and handle padding
         new_input_ids = self.tensor_fn.concatenate_with_padding([
             rollings.batch['input_ids'],
@@ -310,6 +309,7 @@ class AgentActorManager:
 
         # Cut to appropriate length
         effective_lens = new_attention_mask.sum(dim=1)
+        # print("active_mask before: ", active_mask, "effective_lens: ", effective_lens)
         effective_len = effective_lens.max()
         min_effective_len = effective_lens.min().item()
         # max_len = min(self.config.max_prompt_length, effective_len)
@@ -361,7 +361,47 @@ class AgentActorManager:
             ray_prompt_ids.append(new_rollings.batch['input_ids'][i][non_pad_index:].tolist())
         new_rollings.non_tensor_batch['raw_prompt_ids'] = np.array(ray_prompt_ids, dtype=object)
 
-        return new_rollings, available_context_budget
+        # Check and update active_mask based on overlong trajectories
+        effective_lens = new_rollings.batch['attention_mask'].sum(dim=1)
+        max_length = self.config.max_prompt_length+self.config.max_response_length
+        overlong_traj_mask = (effective_lens >= max_length)            # torch.BoolTensor
+        if overlong_traj_mask.any():
+            try:
+                overlong_traj_ids = new_rollings.non_tensor_batch['traj_ids'][overlong_traj_mask.cpu().numpy()]
+                await self.close_traj_tool_threads(overlong_traj_ids)
+            except Exception as e:
+                print("--------------------------------")
+                print(new_rollings.non_tensor_batch['traj_ids'])
+                print(overlong_traj_mask)
+                print("--------------------------------")
+                logger.error(f"[update_rolling_state] error when closing tool threads: {repr(e)}")
+            active_mask = self._update_active_mask_inplace(active_mask, (~overlong_traj_mask).to(active_mask.device))
+        # print("active_mask after: ", active_mask, "effective_lens: ", effective_lens, "max_length: ", max_length, "overlong_traj_mask: ", overlong_traj_mask)
+        return new_rollings, available_context_budget, active_mask
+
+    async def close_traj_tool_threads(
+        self,
+        active_uids:Union[List[str], np.ndarray]
+    ):
+        """
+            This function is used to close the trajectories that are overlong and clean up the tool server for corresponding tool threads.
+        """
+        if isinstance(active_uids, np.ndarray):
+            active_uids = active_uids.tolist()
+        if isinstance(active_uids, str):
+            active_uids = [active_uids]
+        finishs = [True for _ in active_uids] # all trajectories are finished
+        actions = ['[Finish]'] * len(active_uids) # no actions, just finish the trajectories
+        is_last_step = True # this is the last step
+        batch_data = {
+            "trajectory_ids": active_uids,
+            "actions": actions,
+            "finish": finishs, # if do_action is False, then it is a finish action, finishing the trajectory,
+            "is_last_step": [is_last_step] * len(finishs)
+        }
+        response = await self.send_batch_requests_async(batch_data)
+        return 
+
 
     def _loss_masked_concatenate_with_padding(self,
         prompt: torch.Tensor,
@@ -458,7 +498,8 @@ class AgentActorManager:
     def _update_active_mask_inplace(self, active_mask: torch.Tensor, new_conditions: torch.Tensor):
         """Update active mask in-place to avoid memory allocation"""
         active_mask &= new_conditions
-        return active_mask.sum().item()  # Return count for logging
+        # return active_mask.sum().item()  # Return count for logging
+        return active_mask
 
     async def run_llm_loop_async(self, gen_batch: DataProto, **sampling_params: Dict[str, Any]) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
@@ -512,14 +553,15 @@ class AgentActorManager:
 
         turns_stats_extra_keys = ['action_lengths', 'obs_lengths', 'rewards', 'tool_interact_info', 'extra_info']
         turns_stats_extra = {}
-        turns_stats_extra['last_obs'] = ["" for _ in range(gen_batch.batch['input_ids'].shape[0])]
+        turns_stats_extra["last_obs"] = ["" for _ in range(gen_batch.batch['input_ids'].shape[0])]
+        turns_stats_extra["last_action"] = ["" for _ in range(gen_batch.batch['input_ids'].shape[0])]
         for key in turns_stats_extra_keys:
             turns_stats_extra[key] = np.empty((gen_batch.batch['input_ids'].shape[0],), dtype=object)  # rewards can be None, so we use object type
             for i in range(gen_batch.batch['input_ids'].shape[0]):
                 turns_stats_extra[key][i] = []
         for i in range(gen_batch.batch['input_ids'].shape[0]):
             turns_stats_extra['extra_info'][i] = gen_batch.non_tensor_batch['extra_info'][i]
-        agent_sampling_params = sampling_params.copy()
+        agent_sampling_params: Dict[str, Any] = sampling_params.copy()
         agent_sampling_params.update({
             "n": 1,  # already repeated by n times in repeat_inputs_by_n
             "stop": self.action_stop_tokens,  # stop when generated an end of action
@@ -530,69 +572,17 @@ class AgentActorManager:
         })
         available_context_budget = self.config.max_response_length
         available_context_budget = min(available_context_budget, self.config.max_action_length)
-        agent_sampling_params['max_tokens'] = available_context_budget # for vllm
-        agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
+        agent_sampling_params['max_tokens'] = int(available_context_budget) # for vllm
+        agent_sampling_params['max_new_tokens'] = int(available_context_budget) # for sglang
 
         perf_timer.end('initialization')
-        # print("--------------------------------")
-        # print(f"self.config.call_tool_first: {self.config.call_tool_first}")
-        # print("--------------------------------")
-        if self.config.call_tool_first:
-            perf_timer.start('initial_tool_call')
-            # Added Zhiheng: Add initial observation to the prompt from server, use response=""
-            do_actions = [True] * len(traj_ids)
-            responses_str = [''] * len(traj_ids)
-            responses_ids = torch.zeros((len(traj_ids), 1), dtype=torch.int64)
-            active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
-            next_obs, dones, valid_action, finishs, rewards, tool_interact_info = await self.interact_with_tool_server(
-                active_uids, responses_str, do_actions, active_mask,
-                extra_fields=rollings.non_tensor_batch.get('extra_info', None)
-            )
-
-            for i, reward in enumerate(rewards):
-                if rewards[i] is not None and active_mask[i]:
-                    turns_stats_extra["rewards"][i].append(reward)
-                if active_mask[i]:
-                    turns_stats_extra["last_obs"][i] = f"[Step 0] " + next_obs[i]
-                turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
-            
-            curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-            active_num_list.append(self._update_active_mask_inplace(active_mask, curr_active_mask))
-            # turns_stats[curr_active_mask] += 1
-            valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
-            next_obs_ids = await self._process_next_obs(next_obs, dones, valid_action, finishs) # [active_size, obs_length]
-
-            obs_idx = 0
-            for i, active in enumerate(active_mask):
-                if i >= len(turns_stats_extra["obs_lengths"]):
-                    break
-                if active:
-                    obs_length = next_obs_ids[obs_idx].shape[0]
-                    turns_stats_extra["obs_lengths"][i].append(int(obs_length))
-                    obs_idx += 1
-                else:
-                    turns_stats_extra["obs_lengths"][i].append(0)
-
-            rollings, available_context_budget = self._update_rolling_state(
-                original_left_side,
-                rollings,
-                responses_ids,
-                next_obs_ids
-            )
-            original_right_side = self._update_right_side(
-                original_right_side,
-                responses_ids,
-                next_obs_ids
-            )
-            agent_sampling_params['max_tokens'] = available_context_budget
-            active_num_list.append(active_mask.sum().item())
-            perf_timer.end('initial_tool_call')
 
         # Main generation loop
         perf_timer.start('main_generation_loop')
         timeout_exception_mask = None
         for step in range(self.config.max_turns+1):
             if not active_mask.any():
+                # print("No active trajectories, break")
                 break
             current_time = time.time()
             timeout_flag = False
@@ -671,13 +661,33 @@ class AgentActorManager:
                         turns_stats_extra["rewards"][i].append(reward)
                     turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
                 perf_timer.end(f'step_{step}_tool_interaction')
+
                 for i, active in enumerate(active_mask):
                     if active:
                         turns_stats_extra["last_obs"][i] = f"[Step {step}] " + next_obs[i]
+                        turns_stats_extra["last_action"][i] = f"[Step {step}] " + responses_str[i]
+                
+                path = "/data/minimax-dialogue/users/ruobai/rl_r2e/debug_info.jsonl"
+                with open(path, "a") as f:
+                    # Write length of next_obs and active_mask
+                    f.write(json.dumps({
+                        "step": step,
+                        "active_mask_length": len(active_mask),
+                        "sum_active_mask": active_mask.sum().item(),
+                        "next_obs_length": len(next_obs)
+                    }, ensure_ascii=False) + "\n")
+                path = "/data/minimax-dialogue/users/ruobai/rl_r2e/debug_info_extra.jsonl"
+                with open(path, "a") as f:
+                    # Write length of next_obs and active_mask
+                    f.write(json.dumps({
+                        "step": step,
+                        "last_obs": turns_stats_extra["last_obs"],
+                        "last_action": turns_stats_extra["last_action"]
+                    }, ensure_ascii=False) + "\n")
 
                 perf_timer.start(f'step_{step}_state_updates')
                 curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-                self._update_active_mask_inplace(active_mask, curr_active_mask)
+                active_mask = self._update_active_mask_inplace(active_mask, curr_active_mask)
                 turns_stats[curr_active_mask] += 1
                 valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
 
@@ -695,11 +705,12 @@ class AgentActorManager:
                         turns_stats_extra["obs_lengths"][i].append(0)
 
                 # Update states
-                rollings, available_context_budget = self._update_rolling_state(
+                rollings, available_context_budget, active_mask = await self._update_rolling_state(
                     original_left_side,
                     rollings,
                     responses_ids,
-                    next_obs_ids
+                    next_obs_ids,
+                    active_mask
                 )
                 original_right_side = self._update_right_side(
                     original_right_side,
@@ -707,13 +718,14 @@ class AgentActorManager:
                     next_obs_ids
                 )
                 available_context_budget = min(available_context_budget, self.config.max_action_length)
-                agent_sampling_params['max_tokens'] = available_context_budget # for vllm
-                agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
+                agent_sampling_params['max_tokens'] = int(available_context_budget) # for vllm
+                agent_sampling_params['max_new_tokens'] = int(available_context_budget) # for sglang
 
                 # TODO: if timeout, we should not update the active_mask, but we should still update the other states
                 if timeout_flag:
                     break
             except Exception as e:
+                raise e
                 logger.error(f"[run_llm_loop_async] aborted – {repr(e)}, traj_ids: {traj_ids}")
                 timeout_exception_mask = active_mask.clone() # Current active
                 break
@@ -731,8 +743,8 @@ class AgentActorManager:
             'active_mask': active_mask.tolist(),
             'action_lengths': turns_stats_extra["action_lengths"],
             'obs_lengths': turns_stats_extra["obs_lengths"],
-            'last_obs': turns_stats_extra["last_obs"],
-            'turn_rewards': turns_stats_extra["rewards"],
+            "last_obs": turns_stats_extra["last_obs"],
+            "last_action": turns_stats_extra["last_action"],
             'tool_interact_info': turns_stats_extra["tool_interact_info"],
             'extra_info': turns_stats_extra["extra_info"],
         }
@@ -843,6 +855,17 @@ class AgentActorManager:
                 overlong_mask = effective_lens >= self.config.max_response_length
             final_output['loss_mask'][overlong_mask] = 0
             logger.debug(f"Masked {overlong_mask.sum().item()}/{final_output['loss_mask'].shape[0]} overlong/exception trajectories.")
+
+        if self.config.mask_non_finished_loss:
+            last_obs = non_tensors["last_obs"] 
+            # If there is no <<< Finished >>><reward> in the last obs, then it is a non-finished trajectory
+            non_finished_mask = [
+                "<<< Finished >>><reward>" not in last_obs[i]
+                for i in range(len(last_obs))
+            ]
+            non_finished_mask = torch.tensor(non_finished_mask, dtype=torch.bool)
+            final_output['loss_mask'][non_finished_mask] = 0
+            logger.debug(f"Masked {non_finished_mask.sum().item()}/{final_output['loss_mask'].shape[0]} non-finished trajectories.")
 
         # Create position ids
         final_output['position_ids'] = self.tensor_fn.create_position_ids(

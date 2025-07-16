@@ -2,6 +2,7 @@ import ray
 import re
 import json
 import time
+import threading 
 import asyncio  
 import contextlib
 import io
@@ -50,9 +51,30 @@ class R2EEnvActor:
         # Initialize environment directly
         env_args = EnvArgs(ds=ds)
         self.env = RepoEnv(env_args)
+
         # print("Checkpoint 2, init RepoEnv")
         self.env.reset()
-        
+        # ------------------------------------------------------------------
+        # ★ 空闲 TTL watchdog
+        # ------------------------------------------------------------------
+        self._ttl_seconds = 1200          # 20 min
+        self._last_access = time.time()
+
+        def _watchdog():
+            """每 5 min 检查一次；若超时则自杀退出 Actor。"""
+            while True:
+                time.sleep(300)
+                if time.time() - self._last_access > self._ttl_seconds:
+                    print(f"[R2EEnvActor] idle for >{self._ttl_seconds}s, exiting.")
+                    try:
+                        self.close_env()
+                        ray.actor.exit_actor()      # 优雅退出
+                    except Exception:
+                        import os
+                        os._exit(0)                # 兜底硬退
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+
         # Add command files if provided
         if self.command_files:
             self.env.add_commands(self.command_files)
@@ -69,6 +91,7 @@ class R2EEnvActor:
             Initial problem statement
         """
         # print("Checkpoint 4, start get_task_instruction")
+        self._last_access = time.time()   # ★ 刷新心跳
         # Get initial problem statement
         problem_statement = self.env.runtime.get_task_instruction()
         user_prompt = f"""Consider the following github issue:
@@ -106,10 +129,14 @@ class R2EEnvActor:
             - valid: Whether action was valid
         """
         # print("Checkpoint 5, start step_env")
+        self._last_access = time.time()   # ★ 刷新心跳
         if "<compute_reward>sandbox_r2e</compute_reward>" in action_str:
-            reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
-            reward_str = f"[no_obs] <reward>{reward}</reward>" #<test_output>{test_output}</test_output>" # 暂时不返回test_output
-            return reward_str, True, True
+            # reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
+            # reward_str = f"[no_obs] <reward>{reward}</reward>" #<test_output>{test_output}</test_output>" # 暂时不返回test_output
+            # return reward_str, True, True
+            
+            # Another logic, penalize the trajetory without submission action
+            return "[No submission action]<reward>0.0</reward>", True, True 
 
         try:
             # Parse action from string (similar to agent.py parse_response)
@@ -240,6 +267,16 @@ class SandboxR2ETool(BaseTool):
     def delete_env(self, trajectory_id):
         """Sync wrapper kept for legacy code paths."""
         asyncio.run(self.adelete_env(trajectory_id))
+    # def delete_env(self, trajectory_id):
+    #     """Sync wrapper that can handle being called from within an event loop."""
+    #     try:
+    #         # 尝试获取当前运行的事件循环
+    #         loop = asyncio.get_running_loop()
+    #         # 如果在事件循环中，创建任务但不等待完成
+    #         asyncio.create_task(self.adelete_env(trajectory_id))
+    #     except RuntimeError:
+    #         # 没有运行的事件循环，可以安全使用 asyncio.run
+    #         asyncio.run(self.adelete_env(trajectory_id))
 
     def parse_action(self, action):
         """
@@ -267,12 +304,13 @@ class SandboxR2ETool(BaseTool):
         
         # 即使格式不标准，也给环境一个尝试的机会
         # 让具体的解析器来决定是否有效
-        print(f"Action: {action}, maybe it is invalid")
-        return action, True
+        # print(f"Action: {action}, maybe it is invalid")
+        # return action, True
+        return action, False
 
     def _cleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 512:
+        while len(self.env_actors) > 384:
             # 实际清理而不是抛出异常
             if not self.actor_creation_order:
                 break
@@ -288,7 +326,7 @@ class SandboxR2ETool(BaseTool):
 
     async def _acleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 512:
+        while len(self.env_actors) > 384:
             # 实际清理而不是抛出异常
             if not self.actor_creation_order:
                 break

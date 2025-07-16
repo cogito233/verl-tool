@@ -29,4 +29,5 @@ class AgentActorConfig:
     rollout_mode: str="sync" # "sync" or "async"
     keep_last_obs: bool = True   # Zhiheng新增
     mask_overlong_loss: bool=False # whether to mask the overlong trajectory to not train on it
-    max_concurrent_trajectories: int=None # Maximum number of concurrent trajectories for async rollout. If None, no limit is applied.
+    mask_non_finished_loss: bool=False # whether to mask the non-finished trajectory to not train on it
+    max_concurrent_trajectories: int=256 # Maximum number of concurrent trajectories for async rollout. If None, no limit is applied.

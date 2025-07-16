@@ -611,6 +611,98 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
         output_batch = self.simple_postprocess(batch, responses)
         output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
         return output_batch
+
+    # async def generate_sequences(self, batch: DataProto, **kwargs) -> DataProto:
+    #     # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_batch_1.pkl", "wb") as f:
+    #     #     pickle.dump(batch, f)
+    #     logger.info("[VerlToolChatCompletionScheduler] generate_sequences start")
+    #     t_start = time.time()
+    #     kwargs.update({
+    #         "model": self.model_name,
+    #         "temperature": self.config.temperature,
+    #         "top_p": self.config.top_p,
+    #     })
+
+    #     # override sampling params for validation
+    #     if batch.meta_info.get("validate", False):
+    #         kwargs["top_p"] = self.config.val_kwargs.top_p
+    #         kwargs["temperature"] = self.config.val_kwargs.temperature
+    #     repeated_batch = self.agent_actor_manager.repeat_inputs_by_n(batch)
+    #     # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_repeated_batch_1.pkl", "wb") as f:
+    #     #     pickle.dump(repeated_batch, f)
+    #     repeated_chunk_batch = repeated_batch.chunk(len(repeated_batch))
+    #     # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_chunk_batch_1.pkl", "wb") as f:
+    #     #     pickle.dump(repeated_chunk_batch[-1], f)
+    #     # repeated_batch = [repeated_batch] # for debug
+    #     logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences number of chunks: {len(repeated_chunk_batch)}")
+    #     tasks = []
+    #     if self.max_concurrent_trajectories is None or self.max_concurrent_trajectories <= 0:
+    #         self.max_concurrent_trajectories = 256
+    #         logger.warning(f"[VerlToolChatCompletionScheduler] max_concurrent_trajectories is not set, set to 256")
+
+    #     if self.agent_config.enable_agent:
+    #         if self.max_concurrent_trajectories is not None and self.max_concurrent_trajectories > 0:
+    #             MAX_CONCURRENCY = self.max_concurrent_trajectories
+    #             START_INTERVAL = getattr(self.config, "launch_interval_sec", 0.5)
+                
+    #             queue: asyncio.Queue = asyncio.Queue()
+    #             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+    #             results = []
+                
+    #             async def producer() -> None:
+    #                 """Feed chunks into the queue at a fixed rate."""
+    #                 for chunk in repeated_chunk_batch:
+    #                     await queue.put(chunk)
+    #                     await asyncio.sleep(START_INTERVAL)
+    #                 # poison pills to gracefully stop workers
+    #                 for _ in range(MAX_CONCURRENCY):
+    #                     await queue.put(None)
+                        
+    #             async def worker() -> None:
+    #                 """Consume chunks and run LLM loop with concurrency guard."""
+    #                 while True:
+    #                     chunk = await queue.get()
+    #                     if chunk is None:
+    #                         break
+    #                     async with sem:
+    #                         # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_chunk_batch_2.pkl", "wb") as f:
+    #                         #     pickle.dump(chunk, f)
+    #                         res = await self.agent_actor_manager.run_llm_loop_async(chunk, **kwargs)
+    #                         results.append(res)
+                
+    #             # launch producer + N workers
+    #             await tqdm.gather(
+    #                 producer(),
+    #                 *[asyncio.create_task(worker()) for _ in range(MAX_CONCURRENCY)],
+    #                 desc="Starting producer-consumer pattern"
+    #             )
+                
+    #             gen_outputs = results
+    #         else:
+    #             for batch_index in range(len(repeated_chunk_batch)):
+    #                 tasks.append(
+    #                     asyncio.create_task(
+    #                         self.agent_actor_manager.run_llm_loop_async(
+    #                             repeated_chunk_batch[batch_index],
+    #                             **kwargs
+    #                         )
+    #                     )
+    #                 )
+    #             # gen_outputs = await asyncio.gather(*tasks)
+    #             gen_outputs = await tqdm.gather(*tasks, total=len(tasks), desc="Async Generating sequences")
+    #         output_batch = DataProto.concat(gen_outputs)
+    #     else:
+    #         kwargs["max_tokens"] = self.max_response_length
+    #         output_batch = await self.simple_generate_sequences(
+    #             repeated_batch,
+    #             **kwargs
+    #         )
+    #     output_batch.meta_info["timing"] = {"generate_sequences": time.time() - t_start}
+    #     logger.info(f"[VerlToolChatCompletionScheduler] generate_sequences for {len(repeated_batch)} number of trajectories done, took", output_batch.meta_info["timing"]["generate_sequences"], "seconds")
+    #     # with open("/minimax-dialogue/users/ruobai/rl_r2e/chat_scheduler_generate_sequences_output_batch_2.pkl", "wb") as f:
+    #     #     pickle.dump(output_batch, f)
+    #     return output_batch
+
     
     async def generate_sequences(self, batch: DataProto, **kwargs) -> DataProto:
         logger.info("[VerlToolChatCompletionScheduler] generate_sequences start")
