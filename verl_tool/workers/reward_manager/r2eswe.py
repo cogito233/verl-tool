@@ -239,7 +239,7 @@ if __name__ == '__main__':
 
     # Load the saved data object from disk
     # with open("verl_step_records/qwen2.5-32b-sft-v1-r2e_lite_user-0711-main-vllm-debug-2025-07-13-05-41-39/step-val-60.pkl", "rb") as f:
-    with open("verl_step_records/qwen2.5-32b-sft-v1-r2e_lite_user-0715-main-vllm-2025-07-15-21-06-14/step-val-25.pkl", "rb") as f:
+    with open("verl_step_records/qwen3-8b-r2e_lite_user-0721-main-vllm-2025-07-21-11-15-00/step-val-0.pkl", "rb") as f:
         dummy_data = pickle.load(f)
     print(dummy_data.batch.keys())
     print(dummy_data.non_tensor_batch.keys())

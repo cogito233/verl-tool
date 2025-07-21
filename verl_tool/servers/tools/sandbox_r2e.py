@@ -134,9 +134,10 @@ class R2EEnvActor:
             # reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
             # reward_str = f"[no_obs] <reward>{reward}</reward>" #<test_output>{test_output}</test_output>" # 暂时不返回test_output
             # return reward_str, True, True
-            
+            # reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
             # Another logic, penalize the trajetory without submission action
-            return "[No submission action]<reward>0.0</reward>", True, True 
+            # return f"[No submission action]<reward>{reward}</reward>", True, True 
+            return f"[No submission action]<reward>0.0</reward>", True, True 
 
         try:
             # Parse action from string (similar to agent.py parse_response)
@@ -154,9 +155,9 @@ class R2EEnvActor:
             # print("Checkpoint 7, start step_env done, obs: ", obs)
 
             # if done, then pad the reward into the observation
-            if done:
-                reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
-                obs = str(obs)+f"<reward>{reward}</reward>" # Maybe Finished is Here
+            # if done:
+            #     reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
+            #     obs = str(obs)+f"<reward>{reward}</reward>" # Maybe Finished is Here
                 # obs += f"<reward>{reward}</reward>"#<test_output>{test_output}</test_output>"
             
             # Return observation as string (following agent.py pattern)
@@ -310,7 +311,7 @@ class SandboxR2ETool(BaseTool):
 
     def _cleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 384:
+        while len(self.env_actors) > 512:
             # 实际清理而不是抛出异常
             if not self.actor_creation_order:
                 break
@@ -326,7 +327,7 @@ class SandboxR2ETool(BaseTool):
 
     async def _acleanup_actors_if_needed(self):
         """Remove oldest actors if count exceeds limit."""
-        while len(self.env_actors) > 384:
+        while len(self.env_actors) > 512:
             # 实际清理而不是抛出异常
             if not self.actor_creation_order:
                 break
@@ -373,6 +374,19 @@ class SandboxR2ETool(BaseTool):
             obs, done, valid = result, False, True
         # print("Checkpoint 14, start result done")
         # LRU 刷新
+        # print("Checkpoint 15, start LRU done")          
+        if not valid:
+            obs = f"The action {action} is invalid, please retry, obs is {obs}"
+        if done and action != "<compute_reward>sandbox_r2e</compute_reward>":
+            obj_ref = actor.reward_env.remote("<compute_reward>sandbox_r2e</compute_reward>")
+            try:
+                reward, valid, test_output = await asyncio.wait_for(obj_ref, timeout=600)
+            except asyncio.TimeoutError:
+                return "[TIMEOUT] (reward_env) <reward>0.0</reward>", True, True
+            except Exception as e:
+                return f"Error: {e}", False, False
+            obs = str(obs)+f"<reward>{reward}</reward>" # Maybe Finished is Here
+
         if trajectory_id in self.actor_creation_order:
             self.actor_creation_order.remove(trajectory_id)
         self.actor_creation_order.append(trajectory_id)
