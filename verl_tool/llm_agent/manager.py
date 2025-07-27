@@ -103,6 +103,13 @@ class AgentActorManager:
         #         messages, tokenize=False, add_generation_prompt=False
         #     ).replace("system", self.config.mtrl_role)
         # self._first_obs = True
+
+        # Zhiheng: Added for no-think training
+        self._think_suffix: str = ""
+        if self.config.mtrl_sep.rstrip().endswith("<think></think>"):
+            suffix_pos = self.config.mtrl_sep.rfind("<think></think>")
+            self._think_suffix = self.config.mtrl_sep[suffix_pos:]  # 保留末尾换行
+ 
         self.max_action_length = self.config.max_action_length if self.config.max_action_length is not None else 0
         self.max_model_len = int(config.max_model_len or config.max_prompt_length + config.max_response_length)
         self.tokenizer_lock = asyncio.Lock()
@@ -516,6 +523,57 @@ class AgentActorManager:
         perf_timer = PerformanceTimer(do_timer=False)
         perf_timer.start('run_llm_loop_total')
         perf_timer.start('initialization')
+
+        # Not used, need check if it is currect; 
+        # Currently the prompt is end with "<imstart>assistant" so directly add obs is weird
+        if self.config.call_tool_first:
+            perf_timer.start('initial_tool_call')
+            # Added Zhiheng: Add initial observation to the prompt from server, use response=""
+            do_actions = [True] * len(traj_ids)
+            responses_str = [''] * len(traj_ids)
+            responses_ids = torch.zeros((len(traj_ids), 1), dtype=torch.int64)
+            active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
+            next_obs, dones, valid_action, finishs, rewards, tool_interact_info = await self.interact_with_tool_server(
+                active_uids, responses_str, do_actions, active_mask,
+                extra_fields=rollings.non_tensor_batch.get('extra_info', None)
+            )
+            for i, reward in enumerate(rewards):
+                if rewards[i] is not None and active_mask[i]:
+                    turns_stats_extra["rewards"][i].append(reward)
+                turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
+            curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
+            active_num_list.append(self._update_active_mask_inplace(active_mask, curr_active_mask))
+            # turns_stats[curr_active_mask] += 1
+            valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
+            next_obs_ids, rollings = await self._process_next_obs(next_obs, dones, valid_action, finishs, tool_interact_info, rollings)
+
+            obs_idx = 0
+            for i, active in enumerate(active_mask):
+                if i >= len(turns_stats_extra["obs_lengths"]):
+                    break
+                if active:
+                    obs_length = next_obs_ids[obs_idx].shape[0]
+                    turns_stats_extra["obs_lengths"][i].append(int(obs_length))
+                    obs_idx += 1
+                else:
+                    turns_stats_extra["obs_lengths"][i].append(0)
+
+            rollings, available_context_budget = self._update_rolling_state(
+                original_left_side,
+                rollings,
+                responses_ids,
+                next_obs_ids,
+                active_mask
+            )
+            original_right_side = self._update_right_side(
+                original_right_side,
+                responses_ids,
+                next_obs_ids
+            )
+            agent_sampling_params['max_tokens'] = available_context_budget # for vllm
+            agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
+            active_num_list.append(active_mask.sum().item())
+            perf_timer.end('initial_tool_call')
         # print("--------------------------------")
         # print(gen_batch)
         # print("--------------------------------")
@@ -539,6 +597,21 @@ class AgentActorManager:
         # print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 
         initial_input_ids = gen_batch.batch['input_ids'][:, -self.config.max_start_length:].clone()
+
+        # Zhiheng: Added for no-think training
+        if self._think_suffix:
+            async with self.tokenizer_lock:
+                think_ids = self.tokenizer(
+                    self._think_suffix,
+                    add_special_tokens=False,
+                    return_tensors='pt'
+                )["input_ids"].to(initial_input_ids.device)
+            think_ids = think_ids.repeat(initial_input_ids.size(0), 1)  # broadcast 到 batch
+            initial_input_ids = torch.cat([initial_input_ids, think_ids], dim=1)
+
+        # 注意：此时长度可能 > max_start_length，若仍想裁剪可再做一次右裁剪
+        # original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
+        original_left_side = {'input_ids': initial_input_ids}
 
         original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
         original_right_side = {'responses': initial_input_ids[:, []],
@@ -586,7 +659,7 @@ class AgentActorManager:
                 break
             current_time = time.time()
             timeout_flag = False
-            if current_time - start_time > 1200: # 20 min timeout, TODO: make it configurable
+            if current_time - start_time > 1800: # 20 min timeout, TODO: make it configurable
                 # Drop all timeout trajectories
                 logger.error(f"[run_llm_loop_async] timeout – {current_time - start_time}s, traj_ids: {traj_ids}")
                 timeout_exception_mask = active_mask.clone() # Current active
@@ -866,6 +939,18 @@ class AgentActorManager:
             non_finished_mask = torch.tensor(non_finished_mask, dtype=torch.bool)
             final_output['loss_mask'][non_finished_mask] = 0
             logger.debug(f"Masked {non_finished_mask.sum().item()}/{final_output['loss_mask'].shape[0]} non-finished trajectories.")
+        
+        # By default, we mask timeout trajectories
+        if True:
+            last_obs = non_tensors["last_obs"] 
+            timeout_mask = [
+                "[TIMEOUT]" in last_obs[i]
+                for i in range(len(last_obs))
+            ]
+            timeout_mask = torch.tensor(timeout_mask, dtype=torch.bool)
+            final_output['loss_mask'][timeout_mask] = 0
+            logger.debug(f"Masked {timeout_mask.sum().item()}/{final_output['loss_mask'].shape[0]} timeout trajectories.")
+
 
         # Create position ids
         final_output['position_ids'] = self.tensor_fn.create_position_ids(

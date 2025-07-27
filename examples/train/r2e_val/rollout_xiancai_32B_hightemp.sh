@@ -13,13 +13,15 @@ set -x
 # dataset_name=r2e_swe_debug
 dataset_name=r2e_lite_user
 # dataset_name=r2e_swe_extra_debug
-train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
+train_data=/root/code/rl_r2e/data/$dataset_name/test.parquet 
+# Something Random
 val_data=/root/code/rl_r2e/data/r2e_swe_verified_user/test.parquet
-model_name=QWen3-32B
-model_path=/data/minimax-dialogue/users/ruobai/cogito/base_model/Qwen3-32B
+val_data_name=r2e_swe_verified_user
+model_name=Xiancai-32B
+model_path=/data/minimax-dialogue/users/xiancai/verl/checkpoints/verl_example_r2e/qwen2p5-32b-grpo-lr1en6-bsz64m8-offpolicy4-0705-mc512-to20-j-7kdr5psku6/global_step_80/actor/huggingface
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=8
-n_nodes=4
+n_nodes=1
 enable_agent=True # enable agent for tool use
 
 # n=8
@@ -29,13 +31,14 @@ batch_size=32
 
 ppo_mini_batch_size=32
 max_prompt_length=10240
-max_response_length=22527 
-max_model_length=32768
-# max_model_length=40960
-# max_response_length=30720 
+# max_response_length=22527 
+# max_model_length=32768
+max_model_length=40960
+max_response_length=30720 
 # max_model_length=40961
 max_obs_length=10240
 temperature=1.0
+val_temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
 # token of each action, which are </answer> and </python> respectively
@@ -45,7 +48,7 @@ rollout_mode='async'
 max_action_length=10240
 rolling_with_prompt=False
 call_tool_first=False
-truncate_obs_side=left # This is weird but required in the current code
+truncate_obs_side=right # This is weird but required in the current code
 truncate_response_side=left
 min_action_num=5
 mirco_batch_size=1
@@ -60,7 +63,7 @@ fsdp_size=-1
 actor_lr=2e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0721-main-vllm"
+run_name="${model_pretty_name}-${val_data_name}-0723-rollout-vllm"
 export VERL_RUN_ID=$run_name
 
 # host=localhost
@@ -78,15 +81,12 @@ tool_server_url=http://$host:$port/get_observation
 # export VLLM_USE_V1=1
 # actor_rollout_ref.agent.max_turns is for debug only
 # PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
-RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
-    --runtime-env=verl_tool/trainer/runtime_env.yaml \
-    -- \
-    PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
+PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     algorithm.adv_estimator=$rl_alg \
     data.train_files=$train_data \
     data.val_files=$val_data \
     data.train_batch_size=$batch_size \
-    data.val_batch_size=512 \
+    data.val_batch_size=2048 \
     data.max_prompt_length=$max_prompt_length \
     data.max_response_length=$max_response_length \
     reward_model.reward_manager=r2eswe \
@@ -110,8 +110,8 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
     +actor_rollout_ref.agent.tool_server_url=$tool_server_url \
     actor_rollout_ref.agent.max_prompt_length=$max_prompt_length \
     actor_rollout_ref.agent.max_response_length=$max_response_length \
-    +actor_rollout_ref.agent.max_concurrent_trajectories=256 \
-    +actor_rollout_ref.actor.max_concurrent_trajectories=256 \
+    +actor_rollout_ref.agent.max_concurrent_trajectories=64 \
+    +actor_rollout_ref.actor.max_concurrent_trajectories=64 \
     actor_rollout_ref.rollout.max_num_seqs=512 \
     +actor_rollout_ref.agent.max_model_length=$max_model_length \
     actor_rollout_ref.agent.max_start_length=$max_prompt_length \
@@ -130,8 +130,9 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
     actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
     actor_rollout_ref.rollout.temperature=$temperature \
+    actor_rollout_ref.rollout.val_kwargs.temperature=$val_temperature \
     actor_rollout_ref.rollout.top_k=-1 \
     actor_rollout_ref.rollout.n=$n \
     actor_rollout_ref.rollout.top_p=1.0 \
@@ -145,16 +146,16 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
     critic.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     algorithm.kl_ctrl.kl_coef=0.0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='qwen3_r2e' \
+    trainer.project_name='qwen3_r2e_rollout' \
     trainer.experiment_name=$run_name \
     trainer.val_before_train=True \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e/${run_name} \
+    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e_rollout/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
-    trainer.total_epochs=2
+    trainer.total_epochs=1
 
 
 # pkill -P -9 $server_pid

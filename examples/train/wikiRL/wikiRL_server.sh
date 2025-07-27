@@ -1,4 +1,4 @@
-source .venv-server/bin/activate
+source .venv-server-wikiRL/bin/activate
 
 ray stop
 ray start --head --dashboard-host=0.0.0.0

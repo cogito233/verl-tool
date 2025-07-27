@@ -12,11 +12,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set -x
 # dataset_name=r2e_swe_debug
 dataset_name=r2e_lite_user
+# dataset_name=r2e_swe_extra_user
 # dataset_name=r2e_swe_extra_debug
 train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
 val_data=/root/code/rl_r2e/data/r2e_swe_verified_user/test.parquet
-model_name=QWen3-32B
-model_path=/data/minimax-dialogue/users/ruobai/cogito/base_model/Qwen3-32B
+model_name=QWen2.5-32B-sft-v1
+model_path=/data/minimax-dialogue/users/qianhong/code/m2/LLaMA-Factory/saves/rl/exp1
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
 n_gpus_per_node=8
 n_nodes=4
@@ -29,12 +30,12 @@ batch_size=32
 
 ppo_mini_batch_size=32
 max_prompt_length=10240
-max_response_length=22527 
-max_model_length=32768
+# max_response_length=22527 
+# max_model_length=32768
 # max_model_length=40960
-# max_response_length=30720 
-# max_model_length=40961
-max_obs_length=10240
+max_response_length=30720 
+max_model_length=40961
+max_obs_length=4096
 temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
@@ -42,7 +43,7 @@ valid_actions="[]"
 
 # === begin, added by Zhiheng ===
 rollout_mode='async'
-max_action_length=10240
+max_action_length=1536
 rolling_with_prompt=False
 call_tool_first=False
 truncate_obs_side=left # This is weird but required in the current code
@@ -50,6 +51,7 @@ truncate_response_side=left
 min_action_num=5
 mirco_batch_size=1
 mirco_batch_size_non_train=1
+max_start_length=2047 # System prompt is always length 800+, not the bottleneck
 use_dynamic_bsz=True # faster
 enable_mtrl=True
 ulysses_sequence_parallel_size=1 # set to 1 for normal verl behavior, otherwise it will cause OOM
@@ -60,7 +62,7 @@ fsdp_size=-1
 actor_lr=2e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0721-main-vllm"
+run_name="${model_pretty_name}-${dataset_name}-0716-main-vllm"
 export VERL_RUN_ID=$run_name
 
 # host=localhost
@@ -114,7 +116,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
     +actor_rollout_ref.actor.max_concurrent_trajectories=256 \
     actor_rollout_ref.rollout.max_num_seqs=512 \
     +actor_rollout_ref.agent.max_model_length=$max_model_length \
-    actor_rollout_ref.agent.max_start_length=$max_prompt_length \
+    actor_rollout_ref.agent.max_start_length=$max_start_length \
     actor_rollout_ref.agent.max_obs_length=$max_obs_length \
     actor_rollout_ref.agent.max_action_length=$max_action_length \
     actor_rollout_ref.agent.rolling_with_prompt=$rolling_with_prompt \
@@ -138,23 +140,23 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
     actor_rollout_ref.rollout.max_model_len=$max_model_length \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$mirco_batch_size_non_train \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
-    critic.optim.lr=2e-6 \
+    critic.optim.lr=1e-6 \
     critic.strategy=$strategy \
     critic.model.path=$model_path \
     critic.ppo_micro_batch_size_per_gpu=$mirco_batch_size \
     critic.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     algorithm.kl_ctrl.kl_coef=0.0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='qwen3_r2e' \
+    trainer.project_name='r2e_swe' \
     trainer.experiment_name=$run_name \
     trainer.val_before_train=True \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e/${run_name} \
+    trainer.default_local_dir=$(pwd)/checkpoints/r2eswe/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
-    trainer.total_epochs=2
+    trainer.total_epochs=5
 
 
 # pkill -P -9 $server_pid

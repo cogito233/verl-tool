@@ -1,10 +1,12 @@
 # ray stop
 # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --head --dashboard-host=0.0.0.0 
-source .venv-server/bin/activate
+source .venv-server-roshan3/bin/activate
 export WANDB_ENTITY=zhihenglyu-cs
 export NCCL_DEBUG=INFO
 export VLLM_USE_V1=1
 export HYDRA_FULL_ERROR=1
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 set -x
 # dataset_name=r2e_swe_debug
@@ -15,15 +17,15 @@ dataset_name=r2e_swe_verified_user
 train_data=/root/code/rl_r2e/data/r2e_lite_user/test.parquet
 val_data=/root/code/rl_r2e/data/r2e_lite_user/test.parquet
 model_name=R2EGym-7B-Agent
-model_path=/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
+model_path=/data/minimax-dialogue/users/ruobai/cogito/base_model/R2EGym-7B-Agent
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
-n_gpus_per_node=4
+n_gpus_per_node=8
 n_nodes=1
 enable_agent=True # enable agent for tool use
 
 # n=8
 # batch_size=32
-n=4
+n=8
 batch_size=4
 
 ppo_mini_batch_size=4
@@ -110,6 +112,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     actor_rollout_ref.agent.truncate_response_side=$truncate_response_side \
     actor_rollout_ref.agent.truncate_obs_side=$truncate_obs_side \
     actor_rollout_ref.agent.mask_overlong_loss=True \
+    +actor_rollout_ref.agent.mask_non_finished_loss=True \
     actor_rollout_ref.agent.max_turns=40 \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$do_offload \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=$fsdp_size \
@@ -137,7 +140,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='r2e_swe' \
     trainer.experiment_name=$run_name \
-    trainer.val_before_train=True \
+    trainer.val_before_train=False \
     trainer.default_hdfs_dir=null \
     trainer.default_local_dir=$(pwd)/checkpoints/r2eswe/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \

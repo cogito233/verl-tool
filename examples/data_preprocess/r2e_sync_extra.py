@@ -181,9 +181,9 @@ def build_dataset(dataset_name, dataset_path):
 
     # 随机打乱数据
     train_data = train_data.shuffle(seed=42)
-    dev_data = train_data.select(range(64))
-    test_data = train_data.select(range(64, 128))
-    new_train_data = train_data.select(range(128, len(train_data)))
+    dev_data = train_data.select(range(1024))
+    test_data = train_data.select(range(1024, 2048))
+    new_train_data = train_data.select(range(2048, len(train_data)))
 
     train_instances = build_instances(new_train_data, "train")
     dev_instances = build_instances(dev_data, "dev")
@@ -211,5 +211,5 @@ def build_dataset(dataset_name, dataset_path):
 
 if __name__ == "__main__":
     dataset_name = "r2e_sync_extra_user"
-    dataset_path = "/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/data/extra_sync_full"
+    dataset_path = "/data/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/data/extra_sync_full"
     build_dataset(dataset_name, dataset_path)

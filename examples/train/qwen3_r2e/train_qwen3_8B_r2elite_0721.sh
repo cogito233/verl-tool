@@ -36,6 +36,7 @@ max_model_length=32768
 # max_model_length=40961
 max_obs_length=10240
 temperature=1.0
+val_temperature=1.0
 strategy="fsdp" # remove _agent for normal verl behavior
 valid_actions="[]" 
 # token of each action, which are </answer> and </python> respectively
@@ -132,6 +133,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
     actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.temperature=$temperature \
+    actor_rollout_ref.rollout.val_kwargs.temperature=$val_temperature \
     actor_rollout_ref.rollout.top_k=-1 \
     actor_rollout_ref.rollout.n=$n \
     actor_rollout_ref.rollout.top_p=1.0 \

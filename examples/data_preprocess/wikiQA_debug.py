@@ -267,7 +267,7 @@ Avoid incorrect formats that omit brackets around parameters or numeric values.\
     print(dataset["train"])
     train_data = dataset["train"]
     # Select first 160 samples for debugging
-    train_data = train_data.select(range(25600))
+    train_data = train_data.select(range(6400))
     print(train_data)
 
     dev_data = dataset["dev"]

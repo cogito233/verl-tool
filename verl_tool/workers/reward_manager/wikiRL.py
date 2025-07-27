@@ -44,7 +44,7 @@ class WikiRLRewardManager:
         if tokenizer is None:
             # Simply use QWen2.5-7B tokenizer
             from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct")
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
@@ -59,7 +59,9 @@ class WikiRLRewardManager:
             return ""
         # First match ```stop [...]``` use regex to find the last ```stop [...]``` in the string
         pred = extract_last_stop_content(pred)
-        score = metric_heuristic(ground_truths, pred)
+        # score = metric_heuristic(ground_truths, pred)
+        # Change to Exact Match
+        score = 1.0 if pred in ground_truths else 0.0
         # print("answer score", ground_truths, pred, score)
         return score
 

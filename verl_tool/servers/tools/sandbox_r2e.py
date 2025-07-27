@@ -136,7 +136,7 @@ class R2EEnvActor:
             # return reward_str, True, True
             # reward, valid, test_output = self.reward_env("<compute_reward>sandbox_r2e</compute_reward>")
             # Another logic, penalize the trajetory without submission action
-            # return f"[No submission action]<reward>{reward}</reward>", True, True 
+            # return f"[No submission action]", True, True 
             return f"[No submission action]<reward>0.0</reward>", True, True 
 
         try:
@@ -378,6 +378,7 @@ class SandboxR2ETool(BaseTool):
         if not valid:
             obs = f"The action {action} is invalid, please retry, obs is {obs}"
         if done and action != "<compute_reward>sandbox_r2e</compute_reward>":
+        # if done:
             obj_ref = actor.reward_env.remote("<compute_reward>sandbox_r2e</compute_reward>")
             try:
                 reward, valid, test_output = await asyncio.wait_for(obj_ref, timeout=600)

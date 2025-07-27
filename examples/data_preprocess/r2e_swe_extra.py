@@ -189,9 +189,9 @@ def build_dataset(dataset_name, dataset_path):
 
     # 随机打乱数据
     train_data = train_data.shuffle(seed=42)
-    dev_data = train_data.select(range(64))
-    test_data = train_data.select(range(64, 128))
-    new_train_data = train_data.select(range(128, len(train_data)))
+    dev_data = train_data.select(range(1280))
+    test_data = train_data.select(range(1280, 2560))
+    new_train_data = train_data.select(range(2560, len(train_data)))
 
     train_instances = build_instances(new_train_data, "train")
     dev_instances = build_instances(dev_data, "dev")
