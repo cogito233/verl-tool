@@ -223,7 +223,7 @@ class R2ESWERewardManager:
                 pickle.dump(data, f)
             print(f"Saved complete data to {temp_file}")
 
-        if "rollout" in self.record_dir.name:
+        if "rollout" in self.record_dir.name or "debug" in self.record_dir.name or "eval" in self.record_dir.name:
             exit(1) # For Debug Only, in this case, we only rollout the testset and save them
 
         if return_dict:
@@ -243,7 +243,8 @@ if __name__ == '__main__':
     # with open("verl_step_records/qwen2.5-32b-sft-v1-r2e_lite_user-0711-main-vllm-debug-2025-07-13-05-41-39/step-val-60.pkl", "rb") as f:
     # with open("verl_step_records/deepswe-preview-r2e_swe_extra_user-0723-rollout-vllm-2025-07-24-16-27-36/step-val-0.pkl", "rb") as f:
     # with open("verl_step_records/deepswe-preview-r2e_sync_extra_user-0723-rollout-vllm-2025-07-24-20-52-36/step-val-0.pkl", "rb") as f:
-    with open("verl_step_records/qwen3-8b-r2e_lite_user-0722-no-overround-main-vllm-2025-07-23-14-50-46/step-val-160.pkl", "rb") as f:
+    with open("verl_step_records_before0728/deepswe-preview-r2e_swe_extra_user-0723-rollout-vllm-2025-07-25-10-49-51/step-val-0.pkl", "rb") as f:
+    # with open("verl_step_records_before0728/deepswe-preview-r2e_swe_extra_user-0723-rollout-vllm-2025-07-24-16-27-36/step-val-0.pkl", "rb") as f:
         dummy_data = pickle.load(f)
     print(dummy_data.batch.keys())
     print(dummy_data.non_tensor_batch.keys())

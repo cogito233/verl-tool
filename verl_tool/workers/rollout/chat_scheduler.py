@@ -532,7 +532,12 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
             # No more ongoing completion requests
             if info["__depth__"] == 0:
                 info["__done__"].set()
-            
+            # print("Prompt: ", prompt[:-120])
+            # print("Prompt_decoded: ", self.tokenizer.decode(prompt[:-120]))
+            # print("Sampling Params: ", sampling_params)
+            # print("Response: ", completion.choices[0].text)
+            # print("Info: ", info)
+            # exit(1)
             return completion.choices[0].text
             
         except Exception as e:
@@ -572,6 +577,12 @@ class VerlToolChatCompletionScheduler(ChatCompletionScheduler):
     async def simple_generate_sequences(
         self, batch: DataProto, **kwargs
     ) -> DataProto:
+        # print("Simple generate sequences start")
+        # print(batch.non_tensor_batch["raw_prompt_ids"][0][-120:])
+        # print(self.tokenizer.decode(batch.non_tensor_batch["raw_prompt_ids"][0][-120:]))
+        # print(batch.non_tensor_batch["raw_prompt_ids"][0])
+        # print(self.tokenizer.decode(batch.non_tensor_batch["raw_prompt_ids"][0]))
+
         t_start = time.time()
         kwargs.update({
             "model": self.model_name,

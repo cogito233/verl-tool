@@ -14,7 +14,7 @@ set -x
 dataset_name=r2e_lite_user
 # dataset_name=r2e_swe_extra_debug
 train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
-val_data=/root/code/rl_r2e/data/r2e_swe_verified_user/test.parquet
+val_data=/root/code/rl_r2e/data/r2e_lite_user/test.parquet
 model_name=QWen3-8B
 model_path=/data/minimax-dialogue/users/ruobai/cogito/base_model/Qwen3-8B
 rl_alg=grpo # gae(ppo) or grpo, if grpo, then better set n>1 otherwise the group norm can not be effective
@@ -61,7 +61,7 @@ fsdp_size=-1
 actor_lr=2e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0728-no-think"
+run_name="debug-${model_pretty_name}-${dataset_name}-0728-no-think"
 export VERL_RUN_ID=$run_name
 
 # host=localhost
@@ -78,7 +78,6 @@ tool_server_url=http://$host:$port/get_observation
 
 # export VLLM_USE_V1=1
 # actor_rollout_ref.agent.max_turns is for debug only
-# PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
 PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     algorithm.adv_estimator=$rl_alg \
     data.train_files=$train_data \
@@ -145,11 +144,11 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     critic.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     algorithm.kl_ctrl.kl_coef=0.0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='qwen3_r2e' \
+    trainer.project_name='qwen3_r2e_debug' \
     trainer.experiment_name=$run_name \
     trainer.val_before_train=True \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e/${run_name} \
+    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e_debug/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
     trainer.save_freq=10 \

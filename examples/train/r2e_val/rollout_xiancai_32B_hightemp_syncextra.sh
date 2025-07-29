@@ -63,7 +63,7 @@ fsdp_size=-1
 actor_lr=2e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${val_data_name}-0723-rollout-vllm"
+run_name="eval-${model_pretty_name}-${val_data_name}-0723-rollout-vllm"
 export VERL_RUN_ID=$run_name
 
 # host=localhost
@@ -146,11 +146,11 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     critic.ulysses_sequence_parallel_size=$ulysses_sequence_parallel_size \
     algorithm.kl_ctrl.kl_coef=0.0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='qwen3_r2e_rollout' \
+    trainer.project_name='qwen3_r2e_eval' \
     trainer.experiment_name=$run_name \
     trainer.val_before_train=True \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e_rollout/${run_name} \
+    trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e_eval/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
     trainer.save_freq=10 \

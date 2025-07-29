@@ -498,6 +498,7 @@ actor_rollout_ref:
     mask_observations: True  # Whether to mask observations for KL loss and gradient descent
     force_finish_for_last_turn: False  # Whether to force finish the last turn
     enable_mtrl: False  # Whether to enable multi-turn training
+    no_think: False  # Whether to enable multi-turn training
     mtrl_role: user  # Role for multi-turn training, e.g., "user" or "assistant"
     mtrl_sep: null  # Separator for multi-turn training, e.g., "\n<|im_start|>system\n{obs}<|im_end|>\n<|im_start|>assistant\n"
     turn_end_token: "<|im_end|>"  # Token to indicate the end of a turn

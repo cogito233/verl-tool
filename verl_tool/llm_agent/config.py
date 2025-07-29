@@ -23,8 +23,9 @@ class AgentActorConfig:
     force_finish_for_last_turn: bool=False
     debug: bool=False
     enable_mtrl: bool=False
+    no_think: bool=False
     mtrl_role: str="user"
-    mtrl_sep: str= "\n<|im_start|>user\n{obs}<|im_end|>\n<|im_start|>assistant\n"
+    mtrl_sep: str= "\n<|im_start|>user\n{obs}<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n"
     turn_end_token: str="<|im_end|>"
     rollout_mode: str="sync" # "sync" or "async"
     keep_last_obs: bool = True   # Zhiheng新增

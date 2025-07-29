@@ -55,6 +55,13 @@ def sanitize_request(obj: Any) -> Any:
     else:
         return obj
 
+def assert_prompt_sync(dp: DataProto, tokenizer):
+    for i in range(len(dp)):
+        ids    = dp.batch['input_ids'][i].tolist()
+        prompt = tokenizer.decode([t for t in ids if t != tokenizer.pad_token_id])
+        raw    = tokenizer.decode(dp.non_tensor_batch['raw_prompt_ids'][i])
+        assert prompt.endswith(raw), f"mismatch @ {i}"
+
 class AgentActorManager:
     def __init__(
         self,
@@ -95,20 +102,33 @@ class AgentActorManager:
             self.additional_eos_token_ids = [int(x) for x in self.additional_eos_token_ids]
         elif self.additional_eos_token_ids is None:
             self.additional_eos_token_ids = []
-        if self.config.mtrl_sep is None:
+        # print(self.config)
+        # print(self.config.mtrl_sep)
+        # exit(1)
+        if self.config.no_think:
+            # Zhiheng 0728, since can not pass the parameter in the confiq, directly set the mtrl_sep
+            self.config.mtrl_sep = "\n<|im_start|>user\n{obs}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            self._think_suffix = "<think>\n\n</think>\n\n"
+        elif self.config.mtrl_sep is None:
             messages = [{"role": "system", "content": "{obs}"}]
             self.config.mtrl_sep = "\n" + self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             self.config.mtrl_sep = self.config.mtrl_sep.replace("system", self.config.mtrl_role)
-        #     self._mtrl_sep_no_gen = "\n" + self.tokenizer.apply_chat_template(
-        #         messages, tokenize=False, add_generation_prompt=False
-        #     ).replace("system", self.config.mtrl_role)
-        # self._first_obs = True
-
-        # Zhiheng: Added for no-think training
-        self._think_suffix: str = ""
-        if self.config.mtrl_sep.rstrip().endswith("<think></think>"):
-            suffix_pos = self.config.mtrl_sep.rfind("<think></think>")
-            self._think_suffix = self.config.mtrl_sep[suffix_pos:]  # 保留末尾换行
+            self._think_suffix: str = ""
+        else:
+            # Zhiheng: Added for no-think training
+            self._think_suffix: str = ""
+        # self._think_suffix: str = ""
+        # if self.config.mtrl_sep.rstrip().endswith("<think>\n\n</think>\n"):
+        #     suffix_pos = self.config.mtrl_sep.rfind("<think>\n\n</think>\n")
+        #     self._think_suffix = self.config.mtrl_sep[suffix_pos:]  # 保留末尾换行
+        print("--------------------------------")
+        print(self.config)
+        print("================")
+        print(self.config.mtrl_sep)
+        print("================")
+        print(self._think_suffix)
+        print("--------------------------------")
+        # exit(1)
  
         self.max_action_length = self.config.max_action_length if self.config.max_action_length is not None else 0
         self.max_model_len = int(config.max_model_len or config.max_prompt_length + config.max_response_length)
@@ -150,6 +170,11 @@ class AgentActorManager:
             for j in range(n):
                 inputs.non_tensor_batch['traj_ids'][i*n+j] += f"_{j}"
         inputs.meta_info['is_repeated_by_n'] = True
+        # 同步 raw_prompt_ids 长度
+        # if 'raw_prompt_ids' in inputs.non_tensor_batch:
+        #     inputs.non_tensor_batch['raw_prompt_ids'] = np.repeat(
+        #         inputs.non_tensor_batch['raw_prompt_ids'], n, axis=0
+        #     )
         return inputs
 
     async def _postprocess_responses(self, responses: Union[torch.Tensor, List[str]], action_step: int) -> torch.Tensor:
@@ -239,10 +264,6 @@ class AgentActorManager:
     async def _process_next_obs(self, next_obs: List[str], dones: List[bool], valid_action: List[bool], finishs: List[bool]) -> torch.Tensor:
         """Process next observations from environment."""
         async with self.tokenizer_lock:
-            # if self._first_obs and self.config.call_tool_first:
-            #     mtrl_sep = self._mtrl_sep_no_gen
-            #     self._first_obs = False
-            # else:
             mtrl_sep = self.config.mtrl_sep
             # next_obs = [obs if not done else "" for obs, done in zip(next_obs, dones)]
             next_obs = [obs if not done else obs for obs, done in zip(next_obs, dones)] # Zhiheng: keep the last observation, for evaluation
@@ -611,11 +632,40 @@ class AgentActorManager:
 
         # 注意：此时长度可能 > max_start_length，若仍想裁剪可再做一次右裁剪
         # original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
-        original_left_side = {'input_ids': initial_input_ids}
+        # original_left_side = {'input_ids': initial_input_ids}
 
         original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
         original_right_side = {'responses': initial_input_ids[:, []],
                                'responses_with_loss_mask': initial_input_ids[:, []]}
+                        
+        gen_batch.batch['input_ids'] = initial_input_ids.clone()
+        gen_batch.batch['attention_mask'] = self.tensor_fn.create_attention_mask(initial_input_ids).clone()
+        gen_batch.batch['position_ids'] = self.tensor_fn.create_position_ids(
+            gen_batch.batch['attention_mask']
+        )
+        # ② **同步 raw_prompt_ids → 确保 vLLM 用到的是最新 prompt**
+        new_raw_prompt_ids = []
+        pad_id = self.tokenizer.pad_token_id
+        for row in initial_input_ids.tolist():
+            # 去掉左侧 padding
+            first_non_pad = next((i for i, tok in enumerate(row) if tok != pad_id), len(row))
+            new_raw_prompt_ids.append(row[first_non_pad:])
+
+        # gen_batch.non_tensor_batch["raw_prompt_ids"] = np.array(
+        #     new_raw_prompt_ids, dtype=object
+        # )
+        B = len(new_raw_prompt_ids)
+        raw_prompt_ids_arr = np.empty(B, dtype=object)   # 先开一个一维 object 数组
+        for i, ids in enumerate(new_raw_prompt_ids):
+            raw_prompt_ids_arr[i] = ids                  # 逐条塞进去，保持“列表”属性
+        gen_batch.non_tensor_batch["raw_prompt_ids"] = raw_prompt_ids_arr
+
+        # print(gen_batch.non_tensor_batch['raw_prompt_ids'].shape)
+        # print(np.array(new_raw_prompt_ids).shape)
+        # print(gen_batch.non_tensor_batch['raw_prompt_ids'].shape)
+        # print(new_raw_prompt_ids)
+        # print(gen_batch.non_tensor_batch['raw_prompt_ids'])
+        # exit(1)
 
         turns_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_action_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
@@ -623,6 +673,9 @@ class AgentActorManager:
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
         traj_ids = gen_batch.non_tensor_batch['traj_ids']
+
+        # print(self.tokenizer.decode(rollings.batch['input_ids'][0][-120:]))
+        # exit(1)
 
         turns_stats_extra_keys = ['action_lengths', 'obs_lengths', 'rewards', 'tool_interact_info', 'extra_info']
         turns_stats_extra = {}
@@ -694,6 +747,10 @@ class AgentActorManager:
                 perf_timer.start(f'step_{step}_generation')
                 # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch2.pkl", "wb") as f:
                 #     pickle.dump(rollings_active, f)
+                # print("--------------------------------")
+                # print("rollings_active: ", rollings_active)
+                # print(self.tokenizer.decode(rollings_active.batch['input_ids'][0][-120:]))
+                # print("--------------------------------")
                 gen_output = await self.generate_sequences(rollings_active, **agent_sampling_params) # [active_size, response_length]
                 # with open("/minimax-dialogue/users/ruobai/rl_r2e/run_llm_loop_async_batch3.pkl", "wb") as f:
                 #     pickle.dump(gen_output, f)
@@ -1196,26 +1253,6 @@ class AgentActorManager:
                 raise ValueError(f"Invalid observation type: {type(obs)}. Expected str or dict.")
         next_obs = processed_next_obs
         return next_obs, dones, valid_action, _finishs, rewards, tool_interact_info
-
-     # Step 4: Add cleanup method (optional but recommended)
-    async def cleanup(self):
-        """Clean up HTTP session"""
-        if self._http_session:
-            await self._http_session.close()
-            self._http_session = None
-    
-    def __del__(self):
-        """Ensure session is closed when object is destroyed"""
-        if self._http_session and not self._http_session.closed:
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._http_session.close())
-                else:
-                    loop.run_until_complete(self._http_session.close())
-            except:
-                pass  # Best effort cleanup
 
 
 if __name__ == "__main__":
