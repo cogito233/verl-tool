@@ -1,4 +1,4 @@
 working_dir: ./
-excludes: ["/.git/", "data/", "outputs", "checkpoints", "verl_step_records", "hf_models", "checkpoints_converted"]
+excludes: ["/.git/", "data/", "outputs", "checkpoints", "verl_step_records", "hf_models", "checkpoints_converted", "verl_step_records_before0728", "verl_step_records_jsonl", "server_logs", "server_tmp_requests"]
 env_vars:
   TORCH_NCCL_AVOID_RECORD_STREAMS: "1"

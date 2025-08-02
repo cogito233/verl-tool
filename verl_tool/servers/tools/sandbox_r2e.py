@@ -53,12 +53,36 @@ class R2EEnvActor:
         self.env = RepoEnv(env_args)
 
         # print("Checkpoint 2, init RepoEnv")
-        self.env.reset()
+        # self.env.reset()
         # ------------------------------------------------------------------
         # ★ 空闲 TTL watchdog
         # ------------------------------------------------------------------
+        # Add command files if provided
+        if self.command_files:
+            self.env.add_commands(self.command_files)
+            print("add command files")
+
         self._ttl_seconds = 1200          # 20 min
         self._last_access = time.time()
+
+        # print("Checkpoint 3, init RepoEnv done")
+        sample_action = """<function=file_editor>
+<parameter=command>view</parameter>
+<parameter=path>/testbed</parameter>
+</function>
+"""
+        # 持续尝试最多5次直到在60s内成功
+        for i in range(5):
+            try:
+                start_time = time.time()
+                self.step_env(sample_action)
+                end_time = time.time()
+                if end_time - start_time < 60:
+                    break
+            except Exception as e:
+                time.sleep(60)
+                continue
+        # self.step_env(sample_action)
 
         def _watchdog():
             """每 5 min 检查一次；若超时则自杀退出 Actor。"""
@@ -74,14 +98,6 @@ class R2EEnvActor:
                         os._exit(0)                # 兜底硬退
 
         threading.Thread(target=_watchdog, daemon=True).start()
-
-        # Add command files if provided
-        if self.command_files:
-            self.env.add_commands(self.command_files)
-            print("add command files")
-
-        # print("Checkpoint 3, init RepoEnv done")
-        
 
     def start_env(self) -> str:
         """

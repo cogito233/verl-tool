@@ -545,56 +545,7 @@ class AgentActorManager:
         perf_timer.start('run_llm_loop_total')
         perf_timer.start('initialization')
 
-        # Not used, need check if it is currect; 
-        # Currently the prompt is end with "<imstart>assistant" so directly add obs is weird
-        if self.config.call_tool_first:
-            perf_timer.start('initial_tool_call')
-            # Added Zhiheng: Add initial observation to the prompt from server, use response=""
-            do_actions = [True] * len(traj_ids)
-            responses_str = [''] * len(traj_ids)
-            responses_ids = torch.zeros((len(traj_ids), 1), dtype=torch.int64)
-            active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
-            next_obs, dones, valid_action, finishs, rewards, tool_interact_info = await self.interact_with_tool_server(
-                active_uids, responses_str, do_actions, active_mask,
-                extra_fields=rollings.non_tensor_batch.get('extra_info', None)
-            )
-            for i, reward in enumerate(rewards):
-                if rewards[i] is not None and active_mask[i]:
-                    turns_stats_extra["rewards"][i].append(reward)
-                turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
-            curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-            active_num_list.append(self._update_active_mask_inplace(active_mask, curr_active_mask))
-            # turns_stats[curr_active_mask] += 1
-            valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
-            next_obs_ids, rollings = await self._process_next_obs(next_obs, dones, valid_action, finishs, tool_interact_info, rollings)
 
-            obs_idx = 0
-            for i, active in enumerate(active_mask):
-                if i >= len(turns_stats_extra["obs_lengths"]):
-                    break
-                if active:
-                    obs_length = next_obs_ids[obs_idx].shape[0]
-                    turns_stats_extra["obs_lengths"][i].append(int(obs_length))
-                    obs_idx += 1
-                else:
-                    turns_stats_extra["obs_lengths"][i].append(0)
-
-            rollings, available_context_budget = self._update_rolling_state(
-                original_left_side,
-                rollings,
-                responses_ids,
-                next_obs_ids,
-                active_mask
-            )
-            original_right_side = self._update_right_side(
-                original_right_side,
-                responses_ids,
-                next_obs_ids
-            )
-            agent_sampling_params['max_tokens'] = available_context_budget # for vllm
-            agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
-            active_num_list.append(active_mask.sum().item())
-            perf_timer.end('initial_tool_call')
         # print("--------------------------------")
         # print(gen_batch)
         # print("--------------------------------")
@@ -674,6 +625,66 @@ class AgentActorManager:
         rollings = gen_batch
         traj_ids = gen_batch.non_tensor_batch['traj_ids']
 
+        # Not used, need check if it is currect; 
+        # Currently the prompt is end with "<imstart>assistant" so directly add obs is weird
+        if self.config.call_tool_first:
+            perf_timer.start('initial_tool_call')
+            # Added Zhiheng: Add initial observation to the prompt from server, use response=""
+            do_actions = [True] * len(traj_ids)
+            responses_str = [''] * len(traj_ids)
+            responses_ids = torch.zeros((len(traj_ids), 1), dtype=torch.int64)
+            active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
+            next_obs, dones, valid_action, finishs, rewards, tool_interact_info = await self.interact_with_tool_server(
+                active_uids, responses_str, do_actions, active_mask,
+                extra_fields=rollings.non_tensor_batch.get('extra_info', None)
+            )
+            for i, reward in enumerate(rewards):
+                if rewards[i] is not None and active_mask[i]:
+                    turns_stats_extra["rewards"][i].append(reward)
+                turns_stats_extra["tool_interact_info"][i].append(tool_interact_info[i])
+            curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
+            active_num_list.append(self._update_active_mask_inplace(active_mask, curr_active_mask))
+            # turns_stats[curr_active_mask] += 1
+            valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
+            next_obs_ids, rollings = await self._process_next_obs(next_obs, dones, valid_action, finishs, tool_interact_info, rollings)
+
+            obs_idx = 0
+            for i, active in enumerate(active_mask):
+                if i >= len(turns_stats_extra["obs_lengths"]):
+                    break
+                if active:
+                    obs_length = next_obs_ids[obs_idx].shape[0]
+                    turns_stats_extra["obs_lengths"][i].append(int(obs_length))
+                    obs_idx += 1
+                else:
+                    turns_stats_extra["obs_lengths"][i].append(0)
+
+            rollings, available_context_budget = self._update_rolling_state(
+                original_left_side,
+                rollings,
+                responses_ids,
+                next_obs_ids,
+                active_mask
+            )
+            original_right_side = self._update_right_side(
+                original_right_side,
+                responses_ids,
+                next_obs_ids
+            )
+            agent_sampling_params['max_tokens'] = available_context_budget # for vllm
+            agent_sampling_params['max_new_tokens'] = available_context_budget # for sglang
+            active_num_list.append(active_mask.sum().item())
+            perf_timer.end('initial_tool_call')
+        else:
+            do_actions = [True] * len(traj_ids)
+            responses_str = [''] * len(traj_ids)
+            responses_ids = torch.zeros((len(traj_ids), 1), dtype=torch.int64)
+            active_uids = [traj_ids[i] for i in range(len(traj_ids)) if active_mask[i]]
+            await self.interact_with_tool_server(
+                active_uids, responses_str, do_actions, active_mask,
+                extra_fields=rollings.non_tensor_batch.get('extra_info', None)
+            )
+        
         # print(self.tokenizer.decode(rollings.batch['input_ids'][0][-120:]))
         # exit(1)
 
@@ -712,7 +723,7 @@ class AgentActorManager:
                 break
             current_time = time.time()
             timeout_flag = False
-            if current_time - start_time > 1800: # 20 min timeout, TODO: make it configurable
+            if current_time - start_time > 1200: # 20 min timeout, TODO: make it configurable
                 # Drop all timeout trajectories
                 logger.error(f"[run_llm_loop_async] timeout – {current_time - start_time}s, traj_ids: {traj_ids}")
                 timeout_exception_mask = active_mask.clone() # Current active
@@ -855,7 +866,7 @@ class AgentActorManager:
                 if timeout_flag:
                     break
             except Exception as e:
-                raise e
+                # raise e
                 logger.error(f"[run_llm_loop_async] aborted – {repr(e)}, traj_ids: {traj_ids}")
                 timeout_exception_mask = active_mask.clone() # Current active
                 break

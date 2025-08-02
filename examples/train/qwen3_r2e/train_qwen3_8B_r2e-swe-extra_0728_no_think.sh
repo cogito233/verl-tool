@@ -10,9 +10,7 @@ export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 set -x
-# dataset_name=r2e_swe_debug
-dataset_name=r2e_lite_user
-# dataset_name=r2e_swe_extra_debug
+dataset_name=r2e_sync_extra_user_all
 train_data=/root/code/rl_r2e/data/$dataset_name/train.parquet
 val_data=/root/code/rl_r2e/data/r2e_swe_verified_user/test.parquet
 model_name=QWen3-8B
@@ -61,7 +59,7 @@ fsdp_size=-1
 actor_lr=2e-6
 
 model_pretty_name=$(echo $model_name | tr '/' '_' | tr '[:upper:]' '[:lower:]')
-run_name="${model_pretty_name}-${dataset_name}-0728-no-think"
+run_name="${model_pretty_name}-${dataset_name}-0731-no-think-r2e-swe-extra"
 export VERL_RUN_ID=$run_name
 
 # host=localhost
@@ -109,8 +107,8 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     +actor_rollout_ref.agent.tool_server_url=$tool_server_url \
     actor_rollout_ref.agent.max_prompt_length=$max_prompt_length \
     actor_rollout_ref.agent.max_response_length=$max_response_length \
-    +actor_rollout_ref.agent.max_concurrent_trajectories=256 \
-    +actor_rollout_ref.actor.max_concurrent_trajectories=256 \
+    +actor_rollout_ref.agent.max_concurrent_trajectories=128 \
+    +actor_rollout_ref.actor.max_concurrent_trajectories=128 \
     actor_rollout_ref.rollout.max_num_seqs=512 \
     +actor_rollout_ref.agent.max_model_length=$max_model_length \
     actor_rollout_ref.agent.max_start_length=$max_prompt_length \
@@ -152,7 +150,7 @@ PYTHONUNBUFFERED=1 python3 -m verl_tool.trainer.main_ppo \
     trainer.default_local_dir=$(pwd)/checkpoints/qwen3_r2e/${run_name} \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$n_nodes \
-    trainer.save_freq=10 \
+    trainer.save_freq=5 \
     trainer.test_freq=10 \
     trainer.total_epochs=1
 

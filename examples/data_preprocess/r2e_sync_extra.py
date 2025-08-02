@@ -181,18 +181,18 @@ def build_dataset(dataset_name, dataset_path):
 
     # 随机打乱数据
     train_data = train_data.shuffle(seed=42)
-    dev_data = train_data.select(range(1024))
-    test_data = train_data.select(range(1024, 2048))
-    new_train_data = train_data.select(range(2048, len(train_data)))
+    # dev_data = train_data.select(range(1024))
+    # test_data = train_data.select(range(1024, 2048))
+    new_train_data = train_data.select(range(0, len(train_data)))
 
     train_instances = build_instances(new_train_data, "train")
-    dev_instances = build_instances(dev_data, "dev")
-    test_instances = build_instances(test_data, "test")
+    # dev_instances = build_instances(dev_data, "dev")
+    # test_instances = build_instances(test_data, "test")
 
     from datasets import Dataset
     train_dataset = Dataset.from_list(train_instances)
-    dev_dataset = Dataset.from_list(dev_instances)
-    test_dataset = Dataset.from_list(test_instances)
+    # dev_dataset = Dataset.from_list(dev_instances)
+    # test_dataset = Dataset.from_list(test_instances)
 
     import argparse
     # Create a simple args object for output directory
@@ -203,13 +203,13 @@ def build_dataset(dataset_name, dataset_path):
     
     os.makedirs(args.output_dir, exist_ok=True)
     train_dataset.to_parquet(os.path.join(args.output_dir, "train.parquet"))
-    dev_dataset.to_parquet(os.path.join(args.output_dir, "dev.parquet"))
-    test_dataset.to_parquet(os.path.join(args.output_dir, "test.parquet"))
+    # dev_dataset.to_parquet(os.path.join(args.output_dir, "dev.parquet"))
+    # test_dataset.to_parquet(os.path.join(args.output_dir, "test.parquet"))
 
-    print("Done! Train size:", len(train_dataset), "Dev size:", len(dev_dataset), "Test size:", len(test_dataset))
+    print("Done! Train size:", len(train_dataset))
 
 
 if __name__ == "__main__":
-    dataset_name = "r2e_sync_extra_user"
+    dataset_name = "r2e_sync_extra_user_all"
     dataset_path = "/data/minimax-dialogue/users/ruobai/cogito_local/r2e-gym/data/extra_sync_full"
     build_dataset(dataset_name, dataset_path)
